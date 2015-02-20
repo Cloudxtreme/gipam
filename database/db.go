@@ -68,6 +68,7 @@ func (d *DB) Allocate(name string, net *IPNet, attrs map[string]string) error {
 		return fmt.Errorf("%s already allocated as \"%s\"", parent.Net, parent.Name)
 	} else {
 		newChildren := []*Allocation{alloc}
+		// TODO: caca
 		for _, a := range parent.Children {
 			if alloc.Net.ContainsNet(a.Net) {
 				alloc.Children = append(alloc.Children, a)

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -34,28 +33,11 @@ func main() {
 	http.HandleFunc("/api/edit", s.Edit)
 	http.HandleFunc("/api/list", s.List)
 	http.Handle("/", http.FileServer(http.Dir("ui")))
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe("0.0.0.0:8080", nil)
 }
 
 type Server struct {
 	db *db.DB
-}
-
-func printAlloc(w io.Writer, a *db.Allocation, indent string) {
-	net := a.Net.String()
-	if a.IsHost() {
-		net = a.Net.IP.String()
-	}
-	fmt.Fprintf(w, "%s%s %s\n", indent, a.Name, net)
-	for _, a := range a.Children {
-		printAlloc(w, a, indent+"  ")
-	}
-}
-
-func (s *Server) Home(w http.ResponseWriter, r *http.Request) {
-	for _, a := range s.db.Allocs {
-		printAlloc(w, a, "")
-	}
 }
 
 func (s *Server) Allocate(w http.ResponseWriter, r *http.Request) {
