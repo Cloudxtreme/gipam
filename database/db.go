@@ -1,15 +1,30 @@
 package database
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
+	"sort"
 )
 
 type DB struct {
 	Name   string
 	Allocs []*Allocation
+	Hosts  []*Host
+
+	// Index of address to host
+	hostLookup map[string]*Host
+}
+
+func New(name string) *DB {
+	return &DB{
+		Name:       name,
+		Allocs:     []*Allocation{},
+		Hosts:      []*Host{},
+		hostLookup: make(map[string]*Host),
+	}
 }
 
 func Load(path string) (*DB, error) {
@@ -17,15 +32,34 @@ func Load(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	var d DB
-	if err = json.Unmarshal(f, &d); err != nil {
+	d := New("")
+	if err = json.Unmarshal(f, d); err != nil {
 		return nil, err
 	}
 	// TODO: validate
 	for _, a := range d.Allocs {
-		a.setParent(nil)
+		recursiveSetParent(a, nil)
 	}
-	return &d, nil
+	for _, h := range d.Hosts {
+		h.parents = make(map[string]*Allocation)
+		for _, a := range h.Addrs {
+			d.hostLookup[a.String()] = h
+			alloc := d.FindContainer(hostToNet(a))
+			if alloc != nil {
+				alloc.hosts[a.String()] = h
+				h.parents[a.String()] = alloc
+			}
+		}
+	}
+	return d, nil
+}
+
+func recursiveSetParent(a *Allocation, p *Allocation) {
+	a.parent = p
+	a.hosts = make(map[string]*Host)
+	for _, c := range a.Children {
+		recursiveSetParent(c, a)
+	}
 }
 
 func Save(path string, d *DB) error {
@@ -55,7 +89,31 @@ func (d *DB) FindExact(n *IPNet) *Allocation {
 	return a
 }
 
-func (d *DB) Allocate(name string, net *IPNet, attrs map[string]string) error {
+func (d *DB) FindHost(addr net.IP) *Host {
+	return d.hostLookup[addr.String()]
+}
+
+// addChildren adds viable allocations from candidates as children of
+// alloc. Mutates alloc.Children and returns the non-viable
+// candidates.
+func addChildren(alloc *Allocation, candidates []*Allocation) []*Allocation {
+	var ret []*Allocation
+	for _, a := range candidates {
+		if alloc.Net.ContainsNet(a.Net) {
+			alloc.Children = append(alloc.Children, a)
+			a.parent = alloc
+		} else {
+			ret = append(ret, a)
+		}
+	}
+	sort.Sort(allocSort(alloc.Children))
+	return ret
+}
+
+func (d *DB) AddAllocation(name string, net *IPNet, attrs map[string]string) error {
+	if ishost(net) {
+		return fmt.Errorf("Cannot allocate %s as an allocation, because it's a host address", net)
+	}
 	alloc := &Allocation{
 		Net:   net,
 		Name:  name,
@@ -63,46 +121,110 @@ func (d *DB) Allocate(name string, net *IPNet, attrs map[string]string) error {
 	}
 	parent := d.FindContainer(alloc.Net)
 	if parent == nil {
+		d.Allocs = addChildren(alloc, d.Allocs)
 		d.Allocs = append(d.Allocs, alloc)
+		sort.Sort(allocSort(d.Allocs))
 	} else if parent.Net.Equal(alloc.Net) {
 		return fmt.Errorf("%s already allocated as \"%s\"", parent.Net, parent.Name)
 	} else {
-		newChildren := []*Allocation{alloc}
-		// TODO: caca
-		for _, a := range parent.Children {
-			if alloc.Net.ContainsNet(a.Net) {
-				alloc.Children = append(alloc.Children, a)
-			} else {
-				newChildren = append(newChildren, a)
-			}
-		}
-		alloc.setParent(parent)
-		parent.Children = newChildren
+		parent.Children = addChildren(alloc, parent.Children)
+		parent.Children = append(parent.Children, alloc)
+		sort.Sort(allocSort(parent.Children))
+		alloc.parent = parent
 	}
 	return nil
 }
 
-func (d *DB) Deallocate(a *Allocation, reparentChildren bool) error {
+func removeAlloc(as []*Allocation, a *Allocation) []*Allocation {
+	var ret []*Allocation
+	for _, b := range as {
+		if a != b {
+			ret = append(ret, b)
+		}
+	}
+	return ret
+}
+
+func (d *DB) RemoveAllocation(a *Allocation, reparentChildren bool) error {
 	c := d.FindContainer(a.Net)
 	if a != c {
 		return fmt.Errorf("Allocation %s is not part of this DB", a.Net)
 	}
-	newChildren := []*Allocation{}
-	for _, c = range a.parent.Children {
-		if c != a {
-			newChildren = append(newChildren, c)
+	if a.parent == nil {
+		d.Allocs = removeAlloc(d.Allocs, c)
+		if reparentChildren {
+			d.Allocs = append(d.Allocs, c.Children...)
+			for _, a := range d.Allocs {
+				a.parent = nil
+			}
+			sort.Sort(allocSort(d.Allocs))
+		}
+	} else {
+		a.parent.Children = removeAlloc(a.parent.Children, c)
+		if reparentChildren {
+			a.parent.Children = append(a.parent.Children, c.Children...)
+			for _, c := range a.parent.Children {
+				c.parent = a.parent
+			}
+			sort.Sort(allocSort(a.parent.Children))
 		}
 	}
-	if reparentChildren {
-		for _, c := range a.Children {
-			c.setParent(a.parent)
-		}
-		newChildren = append(newChildren, a.Children...)
-	}
-	a.parent.Children = newChildren
 	a.Children = nil
 	a.parent = nil
 
+	return nil
+}
+
+func (d *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error {
+	if len(addrs) == 0 {
+		return fmt.Errorf("Hosts must have at least one IP address")
+	}
+	for _, a := range addrs {
+		if h, ok := d.hostLookup[a.String()]; ok {
+			return fmt.Errorf("Cannot add host '%s': address %s already belongs to '%s'", name, a, h.Name)
+		}
+	}
+
+	h := &Host{
+		Name:    name,
+		Addrs:   addrs,
+		Attrs:   attrs,
+		parents: make(map[string]*Allocation),
+	}
+
+	for _, a := range addrs {
+		d.hostLookup[a.String()] = h
+		alloc := d.FindContainer(hostToNet(a))
+		if alloc != nil {
+			alloc.hosts[a.String()] = h
+			h.parents[a.String()] = alloc
+		}
+	}
+
+	d.Hosts = append(d.Hosts, h)
+	return nil
+}
+
+func (d *DB) RemoveHost(h *Host) error {
+	for _, ip := range h.Addrs {
+		if d.FindHost(ip) != h {
+			return fmt.Errorf("Host with IP %s is not part of this DB", ip)
+		}
+	}
+
+	for ip, alloc := range h.parents {
+		delete(alloc.hosts, ip)
+		delete(d.hostLookup, ip)
+	}
+	h.parents = nil
+
+	newHosts := make([]*Host, len(d.Hosts)-1)
+	for _, host := range d.Hosts {
+		if h != host {
+			newHosts = append(newHosts, host)
+		}
+	}
+	d.Hosts = newHosts
 	return nil
 }
 
@@ -111,12 +233,10 @@ type Allocation struct {
 	Name     string            `json:",omitempty"`
 	Attrs    map[string]string `json:",omitempty"`
 	Children []*Allocation     `json:",omitempty"`
-	parent   *Allocation
-}
 
-func (a *Allocation) IsHost() bool {
-	ones, bits := a.Net.Mask.Size()
-	return ones == bits
+	parent *Allocation
+	// Index of IP to host
+	hosts map[string]*Host
 }
 
 func (a *Allocation) findContainer(n *IPNet) *Allocation {
@@ -133,11 +253,13 @@ func (a *Allocation) findContainer(n *IPNet) *Allocation {
 	return a
 }
 
-func (a *Allocation) setParent(p *Allocation) {
-	a.parent = p
-	for _, c := range a.Children {
-		c.setParent(a)
-	}
+type Host struct {
+	Addrs []net.IP
+	Name  string            `json:",omitempty"`
+	Attrs map[string]string `json:",omitempty"`
+
+	// Index of IP to its parent allocation
+	parents map[string]*Allocation
 }
 
 type IPNet struct {
@@ -157,23 +279,34 @@ func (n *IPNet) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (n *IPNet) Family() string {
-	return family(n.IP)
-}
-
 func (n *IPNet) ContainsNet(n2 *IPNet) bool {
-	if n.Family() != n2.Family() {
+	if isv4(n.IP) != isv4(n2.IP) {
 		return false
 	}
 
 	o1, _ := n.Mask.Size()
 	o2, _ := n2.Mask.Size()
 	return o2 >= o1 && n.IP.Mask(n.Mask).Equal(n2.IP.Mask(n.Mask))
-
 }
 
 func (n *IPNet) Equal(n2 *IPNet) bool {
 	return n.ContainsNet(n2) && n2.ContainsNet(n)
+}
+
+func (n *IPNet) Less(n2 *IPNet) bool {
+	if isv4(n.IP) != isv4(n2.IP) {
+		return isv4(n.IP)
+	}
+
+	o1, _ := n.Mask.Size()
+	o2, _ := n.Mask.Size()
+	if o1 < o2 {
+		return true
+	}
+
+	i1 := n.IP.Mask(n.Mask).To16()
+	i2 := n2.IP.Mask(n2.Mask).To16()
+	return bytes.Compare(i1, i2) < 0
 }
 
 func (n *IPNet) FirstAddr() net.IP {
@@ -182,7 +315,7 @@ func (n *IPNet) FirstAddr() net.IP {
 
 func (n *IPNet) LastAddr() net.IP {
 	ret := n.IP.Mask(n.Mask)
-	if family(ret) == "ipv4" {
+	if isv4(ret) {
 		ret = ret.To4()
 	}
 	ones, bits := n.Mask.Size()
@@ -202,9 +335,39 @@ func (n *IPNet) LastAddr() net.IP {
 	return ret
 }
 
-func family(ip net.IP) string {
-	if ip.To4() != nil {
-		return "ipv4"
+func isv4(ip net.IP) bool {
+	return ip.To4() != nil
+}
+
+func ishost(n *IPNet) bool {
+	ones, bits := n.Mask.Size()
+	return ones == bits
+}
+
+func hostToNet(i net.IP) *IPNet {
+	n := &IPNet{&net.IPNet{
+		IP: i,
+	}}
+	if isv4(i) {
+		n.Mask = net.CIDRMask(32, 32)
+	} else {
+		n.Mask = net.CIDRMask(128, 128)
 	}
-	return "ipv6"
+	return n
+}
+
+// TODO: make this sort by CIDR prefix correctly, rather than just
+// textually.
+type allocSort []*Allocation
+
+func (a allocSort) Len() int {
+	return len(a)
+}
+
+func (a allocSort) Less(i, j int) bool {
+	return a[i].Net.Less(a[j].Net)
+}
+
+func (a allocSort) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
 }
