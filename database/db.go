@@ -44,7 +44,7 @@ func Load(path string) (*DB, error) {
 		h.parents = make(map[string]*Allocation)
 		for _, a := range h.Addrs {
 			d.hostLookup[a.String()] = h
-			alloc := d.FindContainer(hostToNet(a))
+			alloc := d.FindAllocation(hostToNet(a), false)
 			if alloc != nil {
 				alloc.hosts[a.String()] = h
 				h.parents[a.String()] = alloc
@@ -70,23 +70,16 @@ func Save(path string, d *DB) error {
 	return ioutil.WriteFile(path, f, 0640)
 }
 
-// FindContainer returns the smallest Allocation that contains n.
-// Returns nil if no matching allocations exist.
-func (d *DB) FindContainer(n *IPNet) *Allocation {
+func (d *DB) FindAllocation(n *IPNet, exact bool) *Allocation {
 	for _, a := range d.Allocs {
 		if ret := a.findContainer(n); ret != nil {
+			if exact && !ret.Net.Equal(n) {
+				return nil
+			}
 			return ret
 		}
 	}
 	return nil
-}
-
-func (d *DB) FindExact(n *IPNet) *Allocation {
-	a := d.FindContainer(n)
-	if a == nil || !a.Net.Equal(n) {
-		return nil
-	}
-	return a
 }
 
 func (d *DB) FindHost(addr net.IP) *Host {
@@ -118,8 +111,9 @@ func (d *DB) AddAllocation(name string, net *IPNet, attrs map[string]string) err
 		Net:   net,
 		Name:  name,
 		Attrs: attrs,
+		hosts: make(map[string]*Host),
 	}
-	parent := d.FindContainer(alloc.Net)
+	parent := d.FindAllocation(alloc.Net, false)
 	if parent == nil {
 		d.Allocs = addChildren(alloc, d.Allocs)
 		d.Allocs = append(d.Allocs, alloc)
@@ -146,8 +140,8 @@ func removeAlloc(as []*Allocation, a *Allocation) []*Allocation {
 }
 
 func (d *DB) RemoveAllocation(a *Allocation, reparentChildren bool) error {
-	c := d.FindContainer(a.Net)
-	if a != c {
+	c := d.FindAllocation(a.Net, true)
+	if c == nil {
 		return fmt.Errorf("Allocation %s is not part of this DB", a.Net)
 	}
 	if a.parent == nil {
@@ -159,6 +153,9 @@ func (d *DB) RemoveAllocation(a *Allocation, reparentChildren bool) error {
 			}
 			sort.Sort(allocSort(d.Allocs))
 		}
+		for ip, host := range c.hosts {
+			delete(host.parents, ip)
+		}
 	} else {
 		a.parent.Children = removeAlloc(a.parent.Children, c)
 		if reparentChildren {
@@ -167,6 +164,10 @@ func (d *DB) RemoveAllocation(a *Allocation, reparentChildren bool) error {
 				c.parent = a.parent
 			}
 			sort.Sort(allocSort(a.parent.Children))
+		}
+		for ip, host := range c.hosts {
+			host.parents[ip] = a.parent
+			a.parent.hosts[ip] = host
 		}
 	}
 	a.Children = nil
@@ -194,7 +195,7 @@ func (d *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error
 
 	for _, a := range addrs {
 		d.hostLookup[a.String()] = h
-		alloc := d.FindContainer(hostToNet(a))
+		alloc := d.FindAllocation(hostToNet(a), false)
 		if alloc != nil {
 			alloc.hosts[a.String()] = h
 			h.parents[a.String()] = alloc

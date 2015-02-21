@@ -66,7 +66,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Malformed CIDR prefix", 400)
 				return
 			}
-			alloc := s.db.FindExact(&db.IPNet{net})
+			alloc := s.db.FindAllocation(&db.IPNet{net}, true)
 			if alloc == nil {
 				http.Error(w, fmt.Sprintf("Allocation %s does not exist", net), 404)
 				return
@@ -96,7 +96,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		writeJSON(w, s.db.FindExact(req.Net))
+		writeJSON(w, s.db.FindAllocation(req.Net, true))
 	case "PUT":
 		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
 		if cidr == "" {
@@ -117,7 +117,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		alloc := s.db.FindExact(&db.IPNet{net})
+		alloc := s.db.FindAllocation(&db.IPNet{net}, true)
 		if alloc == nil {
 			http.Error(w, "Allocation %s does not exist", 404)
 			return
@@ -144,7 +144,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 		}
 		reparent := r.URL.Query().Get("reparent") != ""
 
-		alloc := s.db.FindExact(&db.IPNet{net})
+		alloc := s.db.FindAllocation(&db.IPNet{net}, true)
 		if alloc == nil {
 			http.Error(w, "Allocation %s does not exist", 404)
 			return

@@ -25,7 +25,7 @@ func mkTextTree(allocs []*Allocation, indent string) string {
 }
 
 func deleteNet(db *DB, net *IPNet) error {
-	alloc := db.FindExact(net)
+	alloc := db.FindAllocation(net, true)
 	if alloc == nil {
 		return fmt.Errorf("Expected alloc for %s not in DB", net)
 	}
@@ -54,7 +54,7 @@ func TestAllocateDeallocate(t *testing.T) {
 
 	for it := 0; it < 1000; it++ {
 		// Golden DB is the above order
-		golden := &DB{}
+		golden := New("")
 		for _, r := range ranges {
 			if err := golden.AddAllocation(cidr(r).String(), cidr(r), nil); err != nil {
 				t.Fatalf("Adding %s to golden DB failed: %s", r, err)
@@ -64,7 +64,7 @@ func TestAllocateDeallocate(t *testing.T) {
 		// Build a new DB with a randomized order
 		order := rand.Perm(len(ranges))
 		var rangesInOrder []string
-		db := &DB{}
+		db := New("")
 		for _, i := range order {
 			rangesInOrder = append(rangesInOrder, ranges[i])
 			r := cidr(ranges[i])
@@ -87,10 +87,16 @@ func TestAllocateDeallocate(t *testing.T) {
 		for _, i := range order {
 			rangesInOrder = append(rangesInOrder, ranges[i])
 			if err := deleteNet(golden, cidr(ranges[i])); err != nil {
-				t.Fatalf("Deleting %s from golden: %s", ranges[i], err)
+				t.Errorf("Deleting %s from golden: %s", ranges[i], err)
+				t.Errorf("Delete sequence:%#v", rangesInOrder)
+				t.Errorf("Golden DB:\n%s", mkTextTree(golden.Allocs, "  "))
+				t.FailNow()
 			}
 			if err := deleteNet(db, cidr(ranges[i])); err != nil {
-				t.Fatalf("Deleting %s from db: %s", ranges[i], err)
+				t.Errorf("Deleting %s from db: %s", ranges[i], err)
+				t.Errorf("Delete sequence:%#v", rangesInOrder)
+				t.Errorf("DB:\n%s", mkTextTree(db.Allocs, "  "))
+				t.FailNow()
 			}
 
 			c, d := mkTextTree(db.Allocs, "  "), mkTextTree(golden.Allocs, "  ")
@@ -100,6 +106,83 @@ func TestAllocateDeallocate(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestHosts(t *testing.T) {
+	t.Parallel()
+	ranges := []string{
+		"192.168.144.0/22",
+		"192.168.144.0/26",
+		"192.168.144.0/28",
+		"192.168.144.16/29",
+		"192.168.144.32/28",
+		"192.168.144.56/29",
+		"192.168.144.64/31",
+		"192.168.144.66/31",
+		"192.168.144.68/31",
+		"192.168.144.64/27",
+		"192.168.144.70/31",
+		"192.168.144.72/31",
+		"192.168.144.128/25",
+		"192.168.144.128/27",
+		"192.168.144.240/28",
+	}
+	db := New("")
+	for _, r := range ranges {
+		if err := db.AddAllocation(r, cidr(r), nil); err != nil {
+			t.Fatalf("Adding %s to DB: %s", r, err)
+		}
+	}
+
+	type hostToAllocs struct {
+		host, alloc string
+	}
+	tests := []hostToAllocs{
+		{"192.168.144.1", "192.168.144.0/28"},
+		{"192.168.144.241", "192.168.144.240/28"},
+		{"192.168.144.242", "192.168.144.240/28"},
+		{"192.168.144.243", "192.168.144.240/28"},
+	}
+	for _, tc := range tests {
+		if err := db.AddHost(tc.host, []net.IP{net.ParseIP(tc.host)}, nil); err != nil {
+			t.Fatalf("Adding %s to DB: %s", tc.host, err)
+		}
+	}
+
+	for _, tc := range tests {
+		h := db.FindHost(net.ParseIP(tc.host))
+		if h == nil {
+			t.Fatalf("%s added to DB, but not found", h)
+		}
+		if len(h.Addrs) != 1 || !h.Addrs[0].Equal(net.ParseIP(tc.host)) {
+			t.Fatalf("Host %s is missing its address", tc.host)
+		}
+
+		a := h.parents[tc.host]
+		if a.Net.String() != tc.alloc {
+			t.Fatalf("Host %s should be in alloc %s, but is actually in %s", tc.host, tc.alloc, a.Net.String())
+		}
+
+		if a.hosts[tc.host] != h {
+			t.Fatalf("Alloc %s doesn't have a host pointer to %s", a.Net, tc.host)
+		}
+	}
+
+	tests = []hostToAllocs{
+		{"192.168.144.1", "192.168.144.0/26"},
+		{"192.168.144.241", "192.168.144.128/25"},
+	}
+	for _, tc := range tests {
+		h := db.FindHost(net.ParseIP(tc.host))
+		if err := db.RemoveAllocation(h.parents[tc.host], true); err != nil {
+			t.Fatalf("Couldn't delete alloc %s, parent of host %s", h.parents[tc.host].Net, tc.host)
+		}
+		if h.parents[tc.host].Net.String() != tc.alloc {
+			t.Fatalf("Host %s should have reparented to %s, but points to %s", tc.host, tc.alloc, h.parents[tc.host].Net)
+		}
+	}
+
+	// TODO: add host, then add an alloc that reparents the hosts
 }
 
 func TestLastAddr(t *testing.T) {
