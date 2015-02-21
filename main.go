@@ -18,6 +18,9 @@ const (
 )
 
 func main() {
+	CLI()
+	return
+
 	d, err := db.Load("db")
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -29,7 +32,7 @@ func main() {
 		}
 	}
 	// Resave immediately, in case there are any format upgrades.
-	if err = db.Save("db", d); err != nil {
+	if err = d.Save("db"); err != nil {
 		log.Fatalln(err)
 	}
 	s := &Server{d}
@@ -91,7 +94,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Allocation of %s failed: %s", req.Net, err), 500)
 			return
 		}
-		if err := db.Save("db", s.db); err != nil {
+		if err := s.db.Save("db"); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -125,7 +128,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 		alloc.Name = req.Name
 		alloc.Attrs = req.Attrs
 
-		if err := db.Save("db", s.db); err != nil {
+		if err := s.db.Save("db"); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -154,7 +157,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Allocation removal failed", 500)
 		}
 
-		if err := db.Save("db", s.db); err != nil {
+		if err := s.db.Save("db"); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -198,7 +201,7 @@ func (s *Server) Host(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Adding host %s failed: %s", req.Name, err), 500)
 			return
 		}
-		if err := db.Save("db", s.db); err != nil {
+		if err := s.db.Save("db"); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -238,7 +241,7 @@ func (s *Server) Host(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.AddHost(req.Name, req.Addrs, req.Attrs); err != nil {
 			http.Error(w, fmt.Sprintf("Editing host %s failed: %s", host.Name, err), 500)
 		}
-		if err := db.Save("db", s.db); err != nil {
+		if err := s.db.Save("db"); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}

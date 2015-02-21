@@ -141,7 +141,7 @@ func TestHosts(t *testing.T) {
 		{"192.168.144.1", "192.168.144.0/28"},
 		{"192.168.144.241", "192.168.144.240/28"},
 		{"192.168.144.242", "192.168.144.240/28"},
-		{"192.168.144.243", "192.168.144.240/28"},
+		{"192.168.145.5", "192.168.144.0/22"},
 	}
 	for _, tc := range tests {
 		if err := db.AddHost(tc.host, []net.IP{net.ParseIP(tc.host)}, nil); err != nil {
@@ -171,18 +171,43 @@ func TestHosts(t *testing.T) {
 	tests = []hostToAllocs{
 		{"192.168.144.1", "192.168.144.0/26"},
 		{"192.168.144.241", "192.168.144.128/25"},
+		{"192.168.145.5", ""},
 	}
 	for _, tc := range tests {
 		h := db.FindHost(net.ParseIP(tc.host))
 		if err := db.RemoveAllocation(h.parents[tc.host], true); err != nil {
 			t.Fatalf("Couldn't delete alloc %s, parent of host %s", h.parents[tc.host].Net, tc.host)
 		}
-		if h.parents[tc.host].Net.String() != tc.alloc {
-			t.Fatalf("Host %s should have reparented to %s, but points to %s", tc.host, tc.alloc, h.parents[tc.host].Net)
+
+		if tc.alloc == "" {
+			if a := h.parents[tc.host]; a != nil {
+				t.Fatalf("IP %s should not have a parent, but is parented to %s", tc.host, a.Net.String())
+			}
+		} else {
+			if h.parents[tc.host].Net.String() != tc.alloc {
+				t.Fatalf("Host %s should have reparented to %s, but points to %s", tc.host, tc.alloc, h.parents[tc.host].Net)
+			}
 		}
 	}
 
-	// TODO: add host, then add an alloc that reparents the hosts
+	tests = []hostToAllocs{
+		{"192.168.144.1", "192.168.144.0/28"},
+		{"192.168.144.241", "192.168.144.240/28"},
+		{"192.168.145.5", "192.168.144.0/22"},
+	}
+
+	for _, tc := range tests {
+		if err := db.AddAllocation(tc.alloc, cidr(tc.alloc), nil); err != nil {
+			t.Fatalf("Couldn't readd alloc %s: %s", tc.alloc, err)
+		}
+		h := db.FindHost(net.ParseIP(tc.host))
+		a := h.parents[tc.host]
+		if a == nil {
+			t.Fatalf("Host %s should have reparented to %s, but has no parent", tc.host, tc.alloc)
+		} else if a.Net.String() != tc.alloc {
+			t.Fatalf("Host %s should have reparented to %s, but points to %s", tc.host, tc.alloc, h.parents[tc.host].Net)
+		}
+	}
 }
 
 func TestLastAddr(t *testing.T) {

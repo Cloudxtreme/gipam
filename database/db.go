@@ -62,7 +62,7 @@ func recursiveSetParent(a *Allocation, p *Allocation) {
 	}
 }
 
-func Save(path string, d *DB) error {
+func (d *DB) Save(path string) error {
 	f, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return err
@@ -103,12 +103,12 @@ func addChildren(alloc *Allocation, candidates []*Allocation) []*Allocation {
 	return ret
 }
 
-func (d *DB) AddAllocation(name string, net *IPNet, attrs map[string]string) error {
-	if ishost(net) {
-		return fmt.Errorf("Cannot allocate %s as an allocation, because it's a host address", net)
+func (d *DB) AddAllocation(name string, network *IPNet, attrs map[string]string) error {
+	if ishost(network) {
+		return fmt.Errorf("Cannot allocate %s as an allocation, because it's a host address", network)
 	}
 	alloc := &Allocation{
-		Net:   net,
+		Net:   network,
 		Name:  name,
 		Attrs: attrs,
 		hosts: make(map[string]*Host),
@@ -118,6 +118,23 @@ func (d *DB) AddAllocation(name string, net *IPNet, attrs map[string]string) err
 		d.Allocs = addChildren(alloc, d.Allocs)
 		d.Allocs = append(d.Allocs, alloc)
 		sort.Sort(allocSort(d.Allocs))
+		for _, h := range d.Hosts {
+			for ipStr, parent := range h.parents {
+				if parent != nil {
+					continue
+				}
+
+				ip := net.ParseIP(ipStr)
+				if ip == nil {
+					panic("Bad IP found in DB")
+				}
+				if alloc.Net.Contains(ip) {
+					alloc.hosts[ipStr] = h
+					h.parents[ipStr] = alloc
+				}
+			}
+		}
+		// TODO: more complex host reparenting
 	} else if parent.Net.Equal(alloc.Net) {
 		return fmt.Errorf("%s already allocated as \"%s\"", parent.Net, parent.Name)
 	} else {
@@ -125,6 +142,17 @@ func (d *DB) AddAllocation(name string, net *IPNet, attrs map[string]string) err
 		parent.Children = append(parent.Children, alloc)
 		sort.Sort(allocSort(parent.Children))
 		alloc.parent = parent
+		for ipStr, host := range parent.hosts {
+			ip := net.ParseIP(ipStr)
+			if ip == nil {
+				panic("Bad IP found in DB")
+			}
+			if alloc.Net.Contains(ip) {
+				delete(parent.hosts, ipStr)
+				alloc.hosts[ipStr] = host
+				host.parents[ipStr] = alloc
+			}
+		}
 	}
 	return nil
 }
@@ -154,7 +182,7 @@ func (d *DB) RemoveAllocation(a *Allocation, reparentChildren bool) error {
 			sort.Sort(allocSort(d.Allocs))
 		}
 		for ip, host := range c.hosts {
-			delete(host.parents, ip)
+			host.parents[ip] = nil
 		}
 	} else {
 		a.parent.Children = removeAlloc(a.parent.Children, c)
@@ -199,6 +227,8 @@ func (d *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error
 		if alloc != nil {
 			alloc.hosts[a.String()] = h
 			h.parents[a.String()] = alloc
+		} else {
+			alloc.hosts[a.String()] = nil
 		}
 	}
 
