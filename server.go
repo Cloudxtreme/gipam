@@ -16,8 +16,8 @@ const (
 	hostPath       = "/api/host/"
 )
 
-func runServer(addr *net.TCPAddr, db *db.DB) {
-	s := &Server{db}
+func runServer(addr *net.TCPAddr, dbPath string, db *db.DB) {
+	s := &Server{db, dbPath}
 	http.HandleFunc(allocationPath, s.Allocation)
 	http.HandleFunc(hostPath, s.Host)
 	http.Handle("/", http.FileServer(http.Dir("ui")))
@@ -25,7 +25,8 @@ func runServer(addr *net.TCPAddr, db *db.DB) {
 }
 
 type Server struct {
-	db *db.DB
+	db   *db.DB
+	path string
 }
 
 func writeJSON(w http.ResponseWriter, obj interface{}) {
@@ -75,7 +76,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Allocation of %s failed: %s", req.Net, err), 500)
 			return
 		}
-		if err := s.db.Save("db"); err != nil {
+		if err := s.db.Save(s.path); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -109,7 +110,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 		alloc.Name = req.Name
 		alloc.Attrs = req.Attrs
 
-		if err := s.db.Save("db"); err != nil {
+		if err := s.db.Save(s.path); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -138,7 +139,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Allocation removal failed", 500)
 		}
 
-		if err := s.db.Save("db"); err != nil {
+		if err := s.db.Save(s.path); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -182,7 +183,7 @@ func (s *Server) Host(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Adding host %s failed: %s", req.Name, err), 500)
 			return
 		}
-		if err := s.db.Save("db"); err != nil {
+		if err := s.db.Save(s.path); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -222,38 +223,37 @@ func (s *Server) Host(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.AddHost(req.Name, req.Addrs, req.Attrs); err != nil {
 			http.Error(w, fmt.Sprintf("Editing host %s failed: %s", host.Name, err), 500)
 		}
-		if err := s.db.Save("db"); err != nil {
+		if err := s.db.Save(s.path); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
 
 		writeJSON(w, host)
-		// case "DELETE":
-		// 	cidr := strings.TrimPrefix(r.URL.Path, hostPath)
-		// 	if cidr == "" {
-		// 		http.Error(w, "Can only DELETE to delete a specific prefix", 400)
-		// 		return
-		// 	}
-		// 	_, net, err := net.ParseCIDR(cidr)
-		// 	if err != nil {
-		// 		http.Error(w, "Malformed CIDR prefix", 400)
-		// 		return
-		// 	}
-		// 	reparent := r.URL.Query().Get("reparent") != ""
+	case "DELETE":
+		addr := strings.TrimPrefix(r.URL.Path, hostPath)
+		if addr == "" {
+			http.Error(w, "Can only DELETE to delete a specific host by IP", 400)
+			return
+		}
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			http.Error(w, "Malformed IP address", 400)
+			return
+		}
 
-		// 	alloc := s.db.FindExact(&db.IPNet{net})
-		// 	if alloc == nil {
-		// 		http.Error(w, "Allocation %s does not exist", 404)
-		// 		return
-		// 	}
+		host := s.db.FindHost(ip)
+		if host == nil {
+			http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
+			return
+		}
 
-		// 	if err := s.db.RemoveAllocation(alloc, reparent); err != nil {
-		// 		http.Error(w, "Allocation removal failed", 500)
-		// 	}
+		if err := s.db.RemoveHost(host); err != nil {
+			http.Error(w, "Host removal failed", 500)
+		}
 
-		// 	if err := db.Save("db", s.db); err != nil {
-		// 		http.Error(w, "Couldn't save change", 500)
-		// 		return
-		// 	}
+		if err := s.db.Save(s.path); err != nil {
+			http.Error(w, "Couldn't save change", 500)
+			return
+		}
 	}
 }

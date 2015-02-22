@@ -120,7 +120,7 @@ func main() {
 
 	switch cmd {
 	case "server":
-		runServer(*serverAddr, db)
+		runServer(*serverAddr, *dbPath, db)
 
 	case "alloc add":
 		err := db.AddAllocation(name, cidr, attrs)
