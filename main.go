@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
+	"log"
 	"net"
 	"sort"
 	"strings"
@@ -60,52 +62,58 @@ func main() {
 	)
 
 	dbPath := kp.Flag("db", "Path to the database file").Default("db").ExistingFile()
+	debug := kp.Flag("debug", "Enable debugging output in CLI mode").Hidden().Default("false").Bool()
+
+	// Server mode
+	server := kp.Command("server", "Run the web server.")
+	serverAddr := server.Arg("ip:port", "IP and port to listen on").Required().TCP()
 
 	// Alloc command family
-	alloc := kp.Command("alloc", "IP range allocation management")
+	alloc := kp.Command("alloc", "IP range allocation management.")
 
-	allocAdd := alloc.Command("add", "Allocate a new IP range")
+	allocAdd := alloc.Command("add", "Allocate a new IP range.")
 	cidrArg(allocAdd)
 	nameArg(allocAdd)
 	attrArg(allocAdd)
 
-	allocEdit := alloc.Command("edit", "Edit the name/attributes of an IP range")
+	allocEdit := alloc.Command("edit", "Edit the name/attributes of an IP range.")
 	cidrArg(allocEdit)
 	nameArg(allocEdit)
 	attrArg(allocEdit)
 
-	allocDel := alloc.Command("rm", "Remove an IP range")
+	allocDel := alloc.Command("rm", "Remove an IP range.")
 	cidrArg(allocDel)
 	allocDelChildren := allocDel.Flag("delete-children", "Delete sub-allocations, instead of reparenting them").Default("false").Bool()
 
-	alloc.Command("list", "List allocated IP ranges")
-	allocShow := alloc.Command("show", "Show detailed data about an IP range")
+	alloc.Command("list", "List allocated IP ranges.")
+	allocShow := alloc.Command("show", "Show detailed data about an IP range.")
 	cidrArg(allocShow)
 
 	// Host command family
-	host := kp.Command("host", "Host allocation management")
-	hostAdd := host.Command("add", "Allocate a new host")
+	host := kp.Command("host", "Host allocation management.")
+	hostAdd := host.Command("add", "Allocate a new host.")
 	nameArg(hostAdd)
 	addrsArg(hostAdd)
 	attrArg(hostAdd)
 
-	hostEdit := host.Command("edit", "Edit the name/addrs/attributes of a host")
+	hostEdit := host.Command("edit", "Edit the name/addrs/attributes of a host.")
 	addrArg(hostEdit)
 	nameArg(hostEdit)
 	addrsArg(hostEdit)
 	attrArg(hostEdit)
 
-	hostRm := host.Command("rm", "Remove a host")
+	hostRm := host.Command("rm", "Remove a host.")
 	addrArg(hostRm)
 
-	host.Command("list", "List hosts")
-	hostShow := host.Command("show", "Show detailed data about a host")
+	host.Command("list", "List hosts.")
+	hostShow := host.Command("show", "Show detailed data about a host.")
 	addrArg(hostShow)
 
-	server := kp.Command("server", "Run the web server")
-	serverAddr := server.Arg("ip:port", "IP and port to listen on").Required().TCP()
-
 	cmd := kp.Parse()
+
+	if cmd != "server" && !*debug {
+		log.SetOutput(ioutil.Discard)
+	}
 
 	db, err := database.Load(*dbPath)
 	kp.FatalIfError(err, "Couldn't load database")
