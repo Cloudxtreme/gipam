@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"sort"
-	"strings"
 
 	kp "gopkg.in/alecthomas/kingpin.v1"
 
@@ -14,53 +13,7 @@ import (
 )
 
 func main() {
-	// Some common arguments used by many of these commands
-	var (
-		cidr  *database.IPNet
-		addr  net.IP
-		addrs []net.IP
-		name  string
-		attrs = make(map[string]string)
-	)
-
-	var (
-		cidrArg = func(c *kp.CmdClause) {
-			c.Arg("cidr", "CIDR prefix").Required().Dispatch(kp.Dispatch(func(p *kp.ParseContext) error {
-				_, net, err := net.ParseCIDR(p.Peek().String())
-				if err != nil {
-					return err
-				}
-				cidr = &database.IPNet{net}
-				return nil
-			})).String()
-		}
-		addrsArg = func(c *kp.CmdClause) {
-			c.Arg("addrs", "Comma-separated IP addresses").Required().Dispatch(kp.Dispatch(func(p *kp.ParseContext) error {
-				ipStrs := strings.Split(p.Peek().String(), ",")
-				for _, ipStr := range ipStrs {
-					ip := net.ParseIP(ipStr)
-					if ip == nil {
-						return fmt.Errorf("Invalid IP address '%s'", ipStr)
-					}
-					addrs = append(addrs, ip)
-				}
-				if len(addrs) < 1 {
-					return fmt.Errorf("Must specify at least one IP address")
-				}
-				return nil
-			})).String()
-		}
-		addrArg = func(c *kp.CmdClause) {
-			c.Arg("addr", "IP address").Required().IPVar(&addr)
-		}
-		nameArg = func(c *kp.CmdClause) {
-			c.Arg("name", "Object name").Required().StringVar(&name)
-		}
-		attrArg = func(c *kp.CmdClause) {
-			c.Arg("attrs", "Key-value attributes").StringMapVar(&attrs)
-		}
-	)
-
+	// Global flags.
 	dbPath := kp.Flag("db", "Path to the database file").Default("db").ExistingFile()
 	debug := kp.Flag("debug", "Enable debugging output in CLI mode").Hidden().Default("false").Bool()
 
@@ -68,29 +21,77 @@ func main() {
 	server := kp.Command("server", "Run the web server.")
 	serverAddr := server.Arg("ip:port", "IP and port to listen on").Required().TCP()
 
-	// Alloc command family
-	alloc := kp.Command("alloc", "IP range allocation management.")
+	var allocArgs struct {
+		cidr        *database.IPNet
+		name        string
+		attrs       map[string]string
+		attrKeys    []string
+		delChildren bool
+	}
+	{
+		a := kp.Command("alloc", "")
 
-	allocAdd := alloc.Command("add", "Allocate a new IP range.")
-	cidrArg(allocAdd)
-	nameArg(allocAdd)
-	attrArg(allocAdd)
+		a.Command("list", "List allocated IP ranges.")
 
-	allocEdit := alloc.Command("edit", "Edit the name/attributes of an IP range.")
-	cidrArg(allocEdit)
-	nameArg(allocEdit)
-	attrArg(allocEdit)
+		// Helper for functions that take a CIDR prefix as their first
+		// positional argument.
+		cmd := func(parent *kp.CmdClause, name, help string) *kp.CmdClause {
+			c := parent.Command(name, help)
+			c.Arg("cidr", "CIDR prefix").Required().Dispatch(kp.Dispatch(func(p *kp.ParseContext) error {
+				_, net, err := net.ParseCIDR(p.Peek().String())
+				if err != nil {
+					return err
+				}
+				allocArgs.cidr = &database.IPNet{net}
+				return nil
 
-	allocDel := alloc.Command("rm", "Remove an IP range.")
-	cidrArg(allocDel)
-	allocDelChildren := allocDel.Flag("delete-children", "Delete sub-allocations, instead of reparenting them").Default("false").Bool()
+			})).String()
+			return c
+		}
 
-	alloc.Command("list", "List allocated IP ranges.")
-	allocShow := alloc.Command("show", "Show detailed data about an IP range.")
-	cidrArg(allocShow)
+		c := cmd(a, "show", "Show details about an IP range.")
 
-	// Host command family
-	host := kp.Command("host", "Host allocation management.")
+		c = cmd(a, "add", "Allocate a new IP range.")
+		c.Arg("name", "Subnet name").Required().StringVar(&allocArgs.name)
+		c.Arg("attrs", "key=value attributes").StringMapVar(&allocArgs.attrs)
+
+		c = cmd(a, "rm", "Remove an IP range.")
+		c.Flag("del-children", "Delete child subnets as well.").Default("false").BoolVar(&allocArgs.delChildren)
+
+		c = cmd(a, "name", "Set the name of an IP range.")
+		c.Arg("name", "Subnet name").Required().StringVar(&allocArgs.name)
+
+		aa = a.Command("attr", "")
+		c = cmd(aa, "set", "Set attributes on an IP range.")
+		c.Arg("attrs", "key=value attributes").Required().StringMapVar(&allocArgs.attrs)
+
+		c = cmd(aa, "rm", "Delete attributes from an IP range.")
+		c.Arg("attr-keys", "Attribute keys").Required().StringsVar(&allocArgs.attrKeys)
+	}
+
+	var hostArgs struct {
+		addr  net.IP
+		name  string
+		attrs map[string]string
+	}
+	{
+		a := kp.Command("host", "")
+
+		a.Command("list", "List hosts.")
+
+		cmd := func(parent *kp.CmdClause, name, help string) *kp.CmdClause {
+			c := parent.Command(name, help)
+			c.Arg("addr", "An IP address of the host").Required().IPVar(&hostArgs.addr)
+			return c
+		}
+
+		cmd(a, "show", "Show details about a host.")
+
+		c := cmd(a, "add", "Add a host.")
+		c.Arg("addrs", "Initial IP address").Required().IPVar(&hostArgs.addr)
+	}
+
+	// Host management
 	hostAdd := host.Command("add", "Allocate a new host.")
 	nameArg(hostAdd)
 	addrsArg(hostAdd)
@@ -128,6 +129,41 @@ func main() {
 		err = db.Save(*dbPath)
 		kp.FatalIfError(err, "Error while saving DB, change not committed")
 		fmt.Printf("Allocated \"%s\" at %s.\n", name, cidr)
+
+	case "alloc desc":
+		alloc := db.FindAllocation(cidr, true)
+		if alloc == nil {
+			kp.Fatalf("Alloc %s not found in database.", cidr)
+		}
+		alloc.Name = *allocDescDesc
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Successfully edited %s.\n", cidr)
+
+	case "alloc attr set":
+		alloc := db.FindAllocation(cidr, true)
+		if alloc == nil {
+			kp.Fatalf("Alloc %s not found in database.", cidr)
+		}
+		for k, v := range attrs {
+			alloc.Attrs[k] = v
+		}
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Successfully edited %s.\n", cidr)
+
+	case "alloc attr rm":
+		alloc := db.FindAllocation(cidr, true)
+		if alloc == nil {
+			kp.Fatalf("Alloc %s not found in database.", cidr)
+		}
+		for _, k := range *allocAttrDelAttrs {
+			delete(alloc.Attrs, k)
+		}
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Successfully edited %s.\n", cidr)
+
 	case "alloc edit":
 		alloc := db.FindAllocation(cidr, true)
 		if alloc == nil {
@@ -140,6 +176,7 @@ func main() {
 		err = db.Save(*dbPath)
 		kp.FatalIfError(err, "Error while saving DB, change not committed")
 		fmt.Printf("Successfully edited %s.\n", cidr)
+
 	case "alloc rm":
 		alloc := db.FindAllocation(cidr, true)
 		if alloc == nil {
@@ -154,8 +191,10 @@ func main() {
 			fmt.Printf(" and children")
 		}
 		fmt.Printf(".\n")
+
 	case "alloc list":
 		allocsAsTree(db.Allocs, "")
+
 	case "alloc show":
 		alloc := db.FindAllocation(cidr, true)
 		if alloc == nil {
@@ -177,6 +216,7 @@ func main() {
 		err = db.Save(*dbPath)
 		kp.FatalIfError(err, "Error while saving DB, change not committed")
 		fmt.Printf("Added host \"%s\"", name)
+
 	case "host edit":
 		host := db.FindHost(addr)
 		if host == nil {
@@ -189,6 +229,7 @@ func main() {
 		err = db.Save(*dbPath)
 		kp.FatalIfError(err, "Error while saving DB, change not committed")
 		fmt.Printf("Successfully edited host %s.\n", addr)
+
 	case "host rm":
 		host := db.FindHost(addr)
 		if host == nil {
@@ -199,6 +240,7 @@ func main() {
 		err = db.Save(*dbPath)
 		kp.FatalIfError(err, "Error while saving DB, change not committed")
 		fmt.Printf("Deleted host %s.\n", host.Name)
+
 	case "host list":
 		for _, h := range db.Hosts {
 			fmt.Printf("%s\n", h.Name)
@@ -206,6 +248,7 @@ func main() {
 				fmt.Printf("  %s\n", a)
 			}
 		}
+
 	case "host show":
 		host := db.FindHost(addr)
 		if host == nil {
@@ -223,6 +266,23 @@ func main() {
 		for _, k := range keys {
 			fmt.Printf("%s: %s\n", k, host.Attrs[k])
 		}
+	default:
+		kp.Usage()
+	}
+
+}
+
+type allocArgs struct {
+}
+
+func (a *allocArgs) CIDRArg() kp.Dispatch {
+	return func(p *kp.ParseContext) error {
+		_, net, err := net.ParseCIDR(p.Peek().String())
+		if err != nil {
+			return err
+		}
+		cidr = &database.IPNet{net}
+		return nil
 	}
 }
 

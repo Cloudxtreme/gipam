@@ -41,6 +41,9 @@ func Load(path string) (*DB, error) {
 		recursiveSetParent(a, nil)
 	}
 	for _, h := range d.Hosts {
+		if h.Attrs == nil {
+			h.Attrs = make(map[string]string)
+		}
 		h.parents = make(map[string]*Allocation)
 		for _, a := range h.Addrs {
 			d.hostLookup[a.String()] = h
@@ -57,6 +60,9 @@ func Load(path string) (*DB, error) {
 func recursiveSetParent(a *Allocation, p *Allocation) {
 	a.parent = p
 	a.hosts = make(map[string]*Host)
+	if a.Attrs == nil {
+		a.Attrs = make(map[string]string)
+	}
 	for _, c := range a.Children {
 		recursiveSetParent(c, a)
 	}
