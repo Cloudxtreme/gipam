@@ -28,6 +28,7 @@ Available commands:
   rm       Remove an object from the database
   setattr  Set attributes on database objects
   rmattr   Remove attributes on database objects
+  server   Run the GIPAM server
 
 See 'gipam help <command>' for more information on a specific command.
 `
@@ -53,6 +54,7 @@ Options:
 `,
 		"setattr": "Usage: gipam setattr (<cidr> | <addr>) (<key> <value>)...\n",
 		"rmattr":  "Usage: gipam rmattr (<cidr> | <addr>) <key>...\n",
+		"server":  "Usage: gipam server [--addr=0.0.0.0] <port>\n",
 	}
 )
 
@@ -88,6 +90,8 @@ func main() {
 		SetAttr(dbPath, getDB(dbPath), subcmd)
 	case "rmattr":
 		RmAttr(dbPath, getDB(dbPath), subcmd)
+	case "server":
+		Server(dbPath, getDB(dbPath), subcmd)
 	}
 }
 
@@ -264,6 +268,16 @@ func RmAttr(dbPath string, db *database.DB, argv []string) {
 	} else {
 		fatal("Invalid selector %s, must be an IP address or a CIDR prefix", selector)
 	}
+}
+
+func Server(dbPath string, db *database.DB, argv []string) {
+	args := parse(subUsage["server"], argv, false)
+	var host string
+	if h, ok := args["--addr"].(string); ok {
+		host = h
+	}
+	port := args["<port>"].(string)
+	runServer(fmt.Sprintf("%s:%s", host, port), dbPath, db)
 }
 
 func fatal(s string, args ...interface{}) {

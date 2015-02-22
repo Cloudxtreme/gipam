@@ -16,15 +16,15 @@ const (
 	hostPath       = "/api/host/"
 )
 
-func runServer(addr *net.TCPAddr, dbPath string, db *db.DB) {
-	s := &Server{db, dbPath}
+func runServer(addr string, dbPath string, db *db.DB) {
+	s := &server{db, dbPath}
 	http.HandleFunc(allocationPath, s.Allocation)
 	http.HandleFunc(hostPath, s.Host)
 	http.Handle("/", http.FileServer(http.Dir("ui")))
-	http.ListenAndServe(addr.String(), nil)
+	http.ListenAndServe(addr, nil)
 }
 
-type Server struct {
+type server struct {
 	db   *db.DB
 	path string
 }
@@ -39,7 +39,7 @@ func writeJSON(w http.ResponseWriter, obj interface{}) {
 	w.Write(f)
 }
 
-func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
+func (s *server) Allocation(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
@@ -146,7 +146,7 @@ func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) Host(w http.ResponseWriter, r *http.Request) {
+func (s *server) Host(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		addr := strings.TrimPrefix(r.URL.Path, hostPath)
