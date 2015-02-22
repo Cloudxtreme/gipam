@@ -1,278 +1,226 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
 	"net"
-	"net/http"
-	"os"
+	"sort"
 	"strings"
 
-	db "github.com/danderson/gipam/database"
-)
+	kp "gopkg.in/alecthomas/kingpin.v1"
 
-const (
-	allocationPath = "/api/allocation/"
-	hostPath       = "/api/host/"
+	"github.com/danderson/gipam/database"
 )
 
 func main() {
-	CLI()
-	return
+	// Some common arguments used by many of these commands
+	var (
+		cidr  *database.IPNet
+		addr  net.IP
+		addrs []net.IP
+		name  string
+		attrs = make(map[string]string)
+	)
 
-	d, err := db.Load("db")
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Fatalln(err)
+	var (
+		cidrArg = func(c *kp.CmdClause) {
+			c.Arg("cidr", "CIDR prefix").Required().Dispatch(kp.Dispatch(func(p *kp.ParseContext) error {
+				_, net, err := net.ParseCIDR(p.Peek().String())
+				if err != nil {
+					return err
+				}
+				cidr = &database.IPNet{net}
+				return nil
+			})).String()
 		}
-		log.Printf("Alloc file doesn't exist, creating empty alloc")
-		d = &db.DB{
-			Name: "New Universe",
+		addrsArg = func(c *kp.CmdClause) {
+			c.Arg("addrs", "Comma-separated IP addresses").Required().Dispatch(kp.Dispatch(func(p *kp.ParseContext) error {
+				ipStrs := strings.Split(p.Peek().String(), ",")
+				for _, ipStr := range ipStrs {
+					ip := net.ParseIP(ipStr)
+					if ip == nil {
+						return fmt.Errorf("Invalid IP address '%s'", ipStr)
+					}
+					addrs = append(addrs, ip)
+				}
+				if len(addrs) < 1 {
+					return fmt.Errorf("Must specify at least one IP address")
+				}
+				return nil
+			})).String()
 		}
-	}
-	// Resave immediately, in case there are any format upgrades.
-	if err = d.Save("db"); err != nil {
-		log.Fatalln(err)
-	}
-	s := &Server{d}
+		addrArg = func(c *kp.CmdClause) {
+			c.Arg("addr", "IP address").Required().IPVar(&addr)
+		}
+		nameArg = func(c *kp.CmdClause) {
+			c.Arg("name", "Object name").Required().StringVar(&name)
+		}
+		attrArg = func(c *kp.CmdClause) {
+			c.Arg("attrs", "Key-value attributes").StringMapVar(&attrs)
+		}
+	)
 
-	http.HandleFunc(allocationPath, s.Allocation)
-	http.HandleFunc(hostPath, s.Host)
-	http.Handle("/", http.FileServer(http.Dir("ui")))
-	http.ListenAndServe("0.0.0.0:8080", nil)
-}
+	dbPath := kp.Flag("db", "Path to the database file").Default("db").ExistingFile()
 
-type Server struct {
-	db *db.DB
-}
+	// Alloc command family
+	alloc := kp.Command("alloc", "IP range allocation management")
 
-func writeJSON(w http.ResponseWriter, obj interface{}) {
-	f, err := json.Marshal(obj)
-	if err != nil {
-		log.Printf("Failed to convert %#v to json: %s", obj, err)
-		http.Error(w, "Error while converting to JSON", 500)
-		return
-	}
-	w.Write(f)
-}
+	allocAdd := alloc.Command("add", "Allocate a new IP range")
+	cidrArg(allocAdd)
+	nameArg(allocAdd)
+	attrArg(allocAdd)
 
-func (s *Server) Allocation(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
-		if cidr == "" {
-			writeJSON(w, s.db.Allocs)
-		} else {
-			_, net, err := net.ParseCIDR(cidr)
-			if err != nil {
-				http.Error(w, "Malformed CIDR prefix", 400)
-				return
-			}
-			alloc := s.db.FindAllocation(&db.IPNet{net}, true)
-			if alloc == nil {
-				http.Error(w, fmt.Sprintf("Allocation %s does not exist", net), 404)
-				return
-			}
-			writeJSON(w, alloc)
-		}
-	case "POST":
-		if strings.TrimPrefix(r.URL.Path, allocationPath) != "" {
-			http.Error(w, fmt.Sprintf("Can only POST new allocations to %s", allocationPath), 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Net   *db.IPNet
-			Attrs map[string]string
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
-		if err := s.db.AddAllocation(req.Name, req.Net, req.Attrs); err != nil {
-			http.Error(w, fmt.Sprintf("Allocation of %s failed: %s", req.Net, err), 500)
-			return
-		}
-		if err := s.db.Save("db"); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
+	allocEdit := alloc.Command("edit", "Edit the name/attributes of an IP range")
+	cidrArg(allocEdit)
+	nameArg(allocEdit)
+	attrArg(allocEdit)
 
-		writeJSON(w, s.db.FindAllocation(req.Net, true))
-	case "PUT":
-		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
-		if cidr == "" {
-			http.Error(w, "Can only PUT to edit a specific prefix", 400)
-			return
-		}
-		_, net, err := net.ParseCIDR(cidr)
-		if err != nil {
-			http.Error(w, "Malformed CIDR prefix", 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Attrs map[string]string
-		}
-		if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
+	allocDel := alloc.Command("rm", "Remove an IP range")
+	cidrArg(allocDel)
+	allocDelChildren := allocDel.Flag("delete-children", "Delete sub-allocations, instead of reparenting them").Default("false").Bool()
 
-		alloc := s.db.FindAllocation(&db.IPNet{net}, true)
+	alloc.Command("list", "List allocated IP ranges")
+	allocShow := alloc.Command("show", "Show detailed data about an IP range")
+	cidrArg(allocShow)
+
+	// Host command family
+	host := kp.Command("host", "Host allocation management")
+	hostAdd := host.Command("add", "Allocate a new host")
+	nameArg(hostAdd)
+	addrsArg(hostAdd)
+	attrArg(hostAdd)
+
+	hostEdit := host.Command("edit", "Edit the name/addrs/attributes of a host")
+	addrArg(hostEdit)
+	nameArg(hostEdit)
+	addrsArg(hostEdit)
+	attrArg(hostEdit)
+
+	hostRm := host.Command("rm", "Remove a host")
+	addrArg(hostRm)
+
+	host.Command("list", "List hosts")
+	hostShow := host.Command("show", "Show detailed data about a host")
+	addrArg(hostShow)
+
+	server := kp.Command("server", "Run the web server")
+	serverAddr := server.Arg("ip:port", "IP and port to listen on").Required().TCP()
+
+	cmd := kp.Parse()
+
+	db, err := database.Load(*dbPath)
+	kp.FatalIfError(err, "Couldn't load database")
+
+	switch cmd {
+	case "server":
+		runServer(*serverAddr, db)
+
+	case "alloc add":
+		err := db.AddAllocation(name, cidr, attrs)
+		kp.FatalIfError(err, "Failed to add allocation")
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Allocated \"%s\" at %s.\n", name, cidr)
+	case "alloc edit":
+		alloc := db.FindAllocation(cidr, true)
 		if alloc == nil {
-			http.Error(w, "Allocation %s does not exist", 404)
-			return
+			kp.Fatalf("Alloc %s not found in database.", cidr)
 		}
-		alloc.Name = req.Name
-		alloc.Attrs = req.Attrs
-
-		if err := s.db.Save("db"); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
-
-		writeJSON(w, alloc)
-	case "DELETE":
-		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
-		if cidr == "" {
-			http.Error(w, "Can only DELETE to delete a specific prefix", 400)
-			return
-		}
-		_, net, err := net.ParseCIDR(cidr)
-		if err != nil {
-			http.Error(w, "Malformed CIDR prefix", 400)
-			return
-		}
-		reparent := r.URL.Query().Get("reparent") != ""
-
-		alloc := s.db.FindAllocation(&db.IPNet{net}, true)
+		err = db.RemoveAllocation(alloc, true)
+		kp.FatalIfError(err, "Error while editing alloc")
+		err = db.AddAllocation(name, cidr, attrs)
+		kp.FatalIfError(err, "Error while editing alloc")
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Successfully edited %s.\n", cidr)
+	case "alloc rm":
+		alloc := db.FindAllocation(cidr, true)
 		if alloc == nil {
-			http.Error(w, "Allocation %s does not exist", 404)
-			return
+			kp.Fatalf("Alloc %s not found in database.", cidr)
+		}
+		err = db.RemoveAllocation(alloc, !*allocDelChildren)
+		kp.FatalIfError(err, "Failed to delete alloc")
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Deleted %s", cidr)
+		if *allocDelChildren {
+			fmt.Printf(" and children")
+		}
+		fmt.Printf(".\n")
+	case "alloc list":
+		allocsAsTree(db.Allocs, "")
+	case "alloc show":
+		alloc := db.FindAllocation(cidr, true)
+		if alloc == nil {
+			kp.Fatalf("Alloc %s not found in database.", cidr)
+		}
+		fmt.Printf("Name: %s\nPrefix: %s\n", alloc.Name, alloc.Net)
+		keys := make([]string, 0, len(alloc.Attrs))
+		for k := range alloc.Attrs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("%s: %s\n", k, alloc.Attrs[k])
 		}
 
-		if err := s.db.RemoveAllocation(alloc, reparent); err != nil {
-			http.Error(w, "Allocation removal failed", 500)
-		}
-
-		if err := s.db.Save("db"); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
-	}
-}
-
-func (s *Server) Host(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		addr := strings.TrimPrefix(r.URL.Path, hostPath)
-		if addr == "" {
-			writeJSON(w, s.db.Hosts)
-		} else {
-			ip := net.ParseIP(addr)
-			if ip == nil {
-				http.Error(w, "Malformed IP address", 400)
-				return
-			}
-			host := s.db.FindHost(ip)
-			if host == nil {
-				http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
-				return
-			}
-			writeJSON(w, host)
-		}
-	case "POST":
-		if strings.TrimPrefix(r.URL.Path, hostPath) != "" {
-			http.Error(w, fmt.Sprintf("Can only POST new hosts to %s", hostPath), 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Addrs []net.IP
-			Attrs map[string]string
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
-		if err := s.db.AddHost(req.Name, req.Addrs, req.Attrs); err != nil {
-			http.Error(w, fmt.Sprintf("Adding host %s failed: %s", req.Name, err), 500)
-			return
-		}
-		if err := s.db.Save("db"); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
-
-		writeJSON(w, s.db.FindHost(req.Addrs[0]))
-	case "PUT":
-		addr := strings.TrimPrefix(r.URL.Path, hostPath)
-		if addr == "" {
-			http.Error(w, "Can only PUT to edit a specific host (by IP address)", 400)
-			return
-		}
-		ip := net.ParseIP(addr)
-		if ip == nil {
-			http.Error(w, "Malformed IP address", 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Addrs []net.IP
-			Attrs map[string]string
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
-
-		host := s.db.FindHost(ip)
+	case "host add":
+		err := db.AddHost(name, addrs, attrs)
+		kp.FatalIfError(err, "Failed to add host")
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Added host \"%s\"", name)
+	case "host edit":
+		host := db.FindHost(addr)
 		if host == nil {
-			http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
-			return
+			kp.Fatalf("Host %s not found in database.", addr)
 		}
-
-		// TODO: needs atomicity here, i.e. a way to roll back the partial edit.
-		if err := s.db.RemoveHost(host); err != nil {
-			http.Error(w, fmt.Sprintf("Editing host %s failed: %s", host.Name, err), 500)
+		err = db.RemoveHost(host)
+		kp.FatalIfError(err, "Error while editing host")
+		err = db.AddHost(name, addrs, attrs)
+		kp.FatalIfError(err, "Error while editing host")
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Successfully edited host %s.\n", addr)
+	case "host rm":
+		host := db.FindHost(addr)
+		if host == nil {
+			kp.Fatalf("Host %s not found in database.", addr)
 		}
-		if err := s.db.AddHost(req.Name, req.Addrs, req.Attrs); err != nil {
-			http.Error(w, fmt.Sprintf("Editing host %s failed: %s", host.Name, err), 500)
+		err = db.RemoveHost(host)
+		kp.FatalIfError(err, "Failed to delete host")
+		err = db.Save(*dbPath)
+		kp.FatalIfError(err, "Error while saving DB, change not committed")
+		fmt.Printf("Deleted host %s.\n", host.Name)
+	case "host list":
+		for _, h := range db.Hosts {
+			fmt.Printf("%s\n", h.Name)
+			for _, a := range h.Addrs {
+				fmt.Printf("  %s\n", a)
+			}
 		}
-		if err := s.db.Save("db"); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
+	case "host show":
+		host := db.FindHost(addr)
+		if host == nil {
+			kp.Fatalf("Host with address %s not found in database.", addr)
 		}
+		fmt.Printf("Name: %s\n", host.Name)
+		for _, a := range host.Addrs {
+			fmt.Printf("Addr: %s\n", a)
+		}
+		keys := make([]string, 0, len(host.Attrs))
+		for k := range host.Attrs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("%s: %s\n", k, host.Attrs[k])
+		}
+	}
+}
 
-		writeJSON(w, host)
-		// case "DELETE":
-		// 	cidr := strings.TrimPrefix(r.URL.Path, hostPath)
-		// 	if cidr == "" {
-		// 		http.Error(w, "Can only DELETE to delete a specific prefix", 400)
-		// 		return
-		// 	}
-		// 	_, net, err := net.ParseCIDR(cidr)
-		// 	if err != nil {
-		// 		http.Error(w, "Malformed CIDR prefix", 400)
-		// 		return
-		// 	}
-		// 	reparent := r.URL.Query().Get("reparent") != ""
-
-		// 	alloc := s.db.FindExact(&db.IPNet{net})
-		// 	if alloc == nil {
-		// 		http.Error(w, "Allocation %s does not exist", 404)
-		// 		return
-		// 	}
-
-		// 	if err := s.db.RemoveAllocation(alloc, reparent); err != nil {
-		// 		http.Error(w, "Allocation removal failed", 500)
-		// 	}
-
-		// 	if err := db.Save("db", s.db); err != nil {
-		// 		http.Error(w, "Couldn't save change", 500)
-		// 		return
-		// 	}
+func allocsAsTree(allocs []*database.Allocation, indent string) {
+	for _, a := range allocs {
+		fmt.Printf("%s%s (%s)\n", indent, a.Net, a.Name)
+		allocsAsTree(a.Children, indent+"  ")
 	}
 }
