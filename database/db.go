@@ -234,7 +234,7 @@ func (d *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error
 			alloc.hosts[a.String()] = h
 			h.parents[a.String()] = alloc
 		} else {
-			alloc.hosts[a.String()] = nil
+			h.parents[a.String()] = nil
 		}
 	}
 
@@ -250,7 +250,9 @@ func (d *DB) RemoveHost(h *Host) error {
 	}
 
 	for ip, alloc := range h.parents {
-		delete(alloc.hosts, ip)
+		if alloc != nil {
+			delete(alloc.hosts, ip)
+		}
 		delete(d.hostLookup, ip)
 	}
 	h.parents = nil

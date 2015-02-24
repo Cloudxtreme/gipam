@@ -142,6 +142,7 @@ func TestHosts(t *testing.T) {
 		{"192.168.144.241", "192.168.144.240/28"},
 		{"192.168.144.242", "192.168.144.240/28"},
 		{"192.168.145.5", "192.168.144.0/22"},
+		{"192.168.0.1", ""},
 	}
 	for _, tc := range tests {
 		if err := db.AddHost(tc.host, []net.IP{net.ParseIP(tc.host)}, nil); err != nil {
@@ -159,12 +160,18 @@ func TestHosts(t *testing.T) {
 		}
 
 		a := h.parents[tc.host]
-		if a.Net.String() != tc.alloc {
-			t.Fatalf("Host %s should be in alloc %s, but is actually in %s", tc.host, tc.alloc, a.Net.String())
-		}
+		if tc.alloc == "" {
+			if a != nil {
+				t.Fatalf("Host %s should not be in an alloc, but is in alloc %s", tc.host, a.Net.String())
+			}
+		} else {
+			if a.Net.String() != tc.alloc {
+				t.Fatalf("Host %s should be in alloc %s, but is actually in %s", tc.host, tc.alloc, a.Net.String())
+			}
 
-		if a.hosts[tc.host] != h {
-			t.Fatalf("Alloc %s doesn't have a host pointer to %s", a.Net, tc.host)
+			if a.hosts[tc.host] != h {
+				t.Fatalf("Alloc %s doesn't have a host pointer to %s", a.Net, tc.host)
+			}
 		}
 	}
 
@@ -206,6 +213,12 @@ func TestHosts(t *testing.T) {
 			t.Fatalf("Host %s should have reparented to %s, but has no parent", tc.host, tc.alloc)
 		} else if a.Net.String() != tc.alloc {
 			t.Fatalf("Host %s should have reparented to %s, but points to %s", tc.host, tc.alloc, h.parents[tc.host].Net)
+		}
+	}
+
+	for _, h := range db.Hosts {
+		if err := db.RemoveHost(h); err != nil {
+			t.Fatalf("Error deleting host %s: %s", h.Name, err)
 		}
 	}
 }
