@@ -223,6 +223,46 @@ func TestHosts(t *testing.T) {
 	}
 }
 
+func TestHostAddrs(t *testing.T) {
+	t.Parallel()
+	ranges := []string{
+		"192.168.144.0/22",
+		"192.168.144.0/26",
+	}
+	db := New("")
+	for _, r := range ranges {
+		if err := db.AddAllocation(r, cidr(r), nil); err != nil {
+			t.Fatalf("Adding %s to DB: %s", r, err)
+		}
+	}
+
+	tests := [][]string{
+		{"192.168.144.1", "fde5:f2ff:2a11:343::1", "42.2.2.1"},
+		{"192.168.1.1", "fde5:f2fd:2a11:343::42", "192.168.145.1"},
+	}
+
+	for _, tc := range tests {
+		if err := db.AddHost("foo", []net.IP{net.ParseIP(tc[0])}, nil); err != nil {
+			t.Fatalf("Adding %s to DB: %s", tc[0], err)
+		}
+		h := db.FindHost(net.ParseIP(tc[0]))
+		if h == nil {
+			t.Fatalf("Host %s added to DB but not found", tc[0])
+		}
+		for _, o := range tc[1:] {
+			if err := db.AddHostAddr(h, net.ParseIP(o)); err != nil {
+				t.Fatalf("Adding %s to host %s: %s", o, tc[0], err)
+			}
+		}
+		for _, a := range tc {
+			h2 := db.FindHost(net.ParseIP(a))
+			if h != h2 {
+				t.Fatalf("Address %s should belong to host %#v, but belongs to %#v", a, h, h2)
+			}
+		}
+	}
+}
+
 func TestLastAddr(t *testing.T) {
 	t.Parallel()
 	type table struct {

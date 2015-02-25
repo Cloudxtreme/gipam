@@ -48,6 +48,7 @@ See 'gipam help <command>' for more information on a specific command.
 		"rm": `Usage:
   gipam rm subnet <cidr> [--recursive]
   gipam rm host <addr>
+  gipam rm address <addr> <addrs>...
 
 Options:
   -r, --recursive  Delete child subnets instead of reparenting
@@ -175,6 +176,20 @@ func Add(dbPath string, db *database.DB, argv []string) {
 		}
 		saveDB(dbPath, db)
 		fmt.Printf("Added host %s\n", name)
+	case args["address"].(bool):
+		hostAddr := addr(args["<addr>"].(string))
+		host := db.FindHost(hostAddr)
+		if host == nil {
+			fatal("Host with IP address %s not found in database", hostAddr)
+		}
+		for _, a := range args["<addrs>"].([]string) {
+			addr := addr(a)
+			if err := db.AddHostAddr(host, addr); err != nil {
+				fatal("Error adding address %s: %s", addr, err)
+			}
+		}
+		saveDB(dbPath, db)
+		fmt.Printf("Added address %s to host %s\n", hostAddr, host.Name)
 	default:
 		panic("unreachable")
 	}
@@ -182,6 +197,7 @@ func Add(dbPath string, db *database.DB, argv []string) {
 
 func Rm(dbPath string, db *database.DB, argv []string) {
 	args := parse(subUsage["rm"], argv, false)
+	fmt.Println(args)
 	switch {
 	case args["subnet"].(bool):
 		cidr := cidr(args["<cidr>"].(string))
@@ -205,6 +221,20 @@ func Rm(dbPath string, db *database.DB, argv []string) {
 		}
 		saveDB(dbPath, db)
 		fmt.Printf("Deleted host %s\n", host.Name)
+	case args["address"].(bool):
+		hostAddr := addr(args["<addr>"].(string))
+		host := db.FindHost(hostAddr)
+		if host == nil {
+			fatal("Host with IP address %s not found in database", hostAddr)
+		}
+		for _, a := range args["<addrs>"].([]string) {
+			addr := addr(a)
+			if err := db.RmHostAddr(host, addr); err != nil {
+				fatal("Error removing address %s: %s", addr, err)
+			}
+		}
+		saveDB(dbPath, db)
+		fmt.Printf("Removed address %s from host %s\n", hostAddr, host.Name)
 	default:
 		panic("unreachable")
 	}

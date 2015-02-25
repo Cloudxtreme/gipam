@@ -50,8 +50,8 @@ func Load(path string) (*DB, error) {
 			alloc := d.FindAllocation(hostToNet(a), false)
 			if alloc != nil {
 				alloc.hosts[a.String()] = h
-				h.parents[a.String()] = alloc
 			}
+			h.parents[a.String()] = alloc
 		}
 	}
 	return d, nil
@@ -232,10 +232,8 @@ func (d *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error
 		alloc := d.FindAllocation(hostToNet(a), false)
 		if alloc != nil {
 			alloc.hosts[a.String()] = h
-			h.parents[a.String()] = alloc
-		} else {
-			h.parents[a.String()] = nil
 		}
+		h.parents[a.String()] = alloc
 	}
 
 	d.Hosts = append(d.Hosts, h)
@@ -264,6 +262,43 @@ func (d *DB) RemoveHost(h *Host) error {
 		}
 	}
 	d.Hosts = newHosts
+	return nil
+}
+
+func (d *DB) AddHostAddr(h *Host, a net.IP) error {
+	other := d.FindHost(a)
+	if other != nil {
+		return fmt.Errorf("Other host %s already has the address %s", other.Name, a)
+	}
+	alloc := d.FindAllocation(hostToNet(a), false)
+	if alloc != nil {
+		alloc.hosts[a.String()] = h
+	}
+	h.parents[a.String()] = alloc
+	h.Addrs = append(h.Addrs, a)
+	d.hostLookup[a.String()] = h
+	return nil
+}
+
+func (d *DB) RmHostAddr(h *Host, a net.IP) error {
+	fmt.Println(h)
+	alloc, ok := h.parents[a.String()]
+	if !ok {
+		return fmt.Errorf("Host %s doesn't have the address %s", h.Name, a)
+	}
+	if alloc != nil {
+		delete(alloc.hosts, a.String())
+	}
+	delete(h.parents, a.String())
+	delete(d.hostLookup, a.String())
+	var newAddrs []net.IP
+	for _, addr := range h.Addrs {
+		if !addr.Equal(a) {
+			newAddrs = append(newAddrs, addr)
+		}
+	}
+	h.Addrs = newAddrs
+
 	return nil
 }
 
