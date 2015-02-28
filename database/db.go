@@ -313,6 +313,13 @@ type Allocation struct {
 	hosts map[string]*Host
 }
 
+func (a *Allocation) Attr(name, dflt string) string {
+	if ret, ok := a.Attrs[name]; ok {
+		return ret
+	}
+	return dflt
+}
+
 func (a *Allocation) findContainer(n *IPNet) *Allocation {
 	if !a.Net.ContainsNet(n) {
 		return nil
@@ -334,6 +341,13 @@ type Host struct {
 
 	// Index of IP to its parent allocation
 	parents map[string]*Allocation
+}
+
+func (h *Host) Attr(name, dflt string) string {
+	if ret, ok := h.Attrs[name]; ok {
+		return ret
+	}
+	return dflt
 }
 
 type IPNet struct {
