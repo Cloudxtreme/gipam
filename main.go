@@ -197,7 +197,6 @@ func Add(dbPath string, db *database.DB, argv []string) {
 
 func Rm(dbPath string, db *database.DB, argv []string) {
 	args := parse(subUsage["rm"], argv, false)
-	fmt.Println(args)
 	switch {
 	case args["subnet"].(bool):
 		cidr := cidr(args["<cidr>"].(string))
