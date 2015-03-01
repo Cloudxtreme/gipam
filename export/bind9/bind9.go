@@ -1,6 +1,8 @@
 package bind9
 
 import (
+	"crypto/sha1"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"strings"
@@ -8,13 +10,36 @@ import (
 	db "github.com/danderson/gipam/database"
 )
 
-// Generate RRs for a domain
 func ExportZone(db *db.DB, name string) (string, error) {
 	domain, ok := db.Domains[name]
 	if !ok {
 		return "", fmt.Errorf("Domain %s not found in database", name)
 	}
-	suffix := "." + name
+
+	zone, err := exportDirect(db, domain)
+	if err != nil {
+		return "", err
+	}
+
+	if zoneHash(zone) != domain.LastHash {
+		domain.Serial.Inc()
+		zone, err = exportDirect(db, domain)
+		if err != nil {
+			return "", err
+		}
+		domain.LastHash = zoneHash(zone)
+	}
+
+	return zone, nil
+}
+
+func zoneHash(zone string) string {
+	sha := sha1.Sum([]byte(zone))
+	return base64.StdEncoding.EncodeToString(sha[:])
+}
+
+func exportDirect(db *db.DB, domain *db.Domain) (string, error) {
+	suffix := "." + domain.Name()
 
 	ret := []string{domain.SOA(), ""}
 
@@ -49,7 +74,7 @@ func ExportZone(db *db.DB, name string) (string, error) {
 			}
 			for _, addr := range host.Addrs {
 				addrDomain := ipDomain(host, addr)
-				if addrDomain == "" || addrDomain != name {
+				if addrDomain == "" || addrDomain != domain.Name() {
 					continue
 				}
 				ret = append(ret, fmt.Sprintf("%s IN %s %s", hostname, rrtype(addr), addr))

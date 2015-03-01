@@ -479,6 +479,7 @@ func Export(dbPath string, db *database.DB, argv []string) {
 			fatal("Export error: %s", err)
 		}
 		fmt.Println(zone)
+		saveDB(dbPath, db)
 	default:
 		panic("unreachable")
 	}

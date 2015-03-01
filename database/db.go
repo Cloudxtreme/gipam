@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -417,8 +418,15 @@ type Domain struct {
 	SlaveExpiry  time.Duration
 	NXDomainTTL  time.Duration
 
+	Serial   ZoneSerial
+	LastHash string // SHA1 of the last zone export.
+
 	NS []string `json:",omitempty"`
 	RR []string `json:",omitempty"`
+}
+
+func (d *Domain) Name() string {
+	return d.name
 }
 
 func (d *Domain) SOA() string {
@@ -430,7 +438,57 @@ func (d *Domain) SOA() string {
 	if email == "" {
 		email = fmt.Sprintf("hostmaster.%s", d.name)
 	}
-	return fmt.Sprintf("@ IN SOA %s. %s. ( %d %d %d %d %d )", ns, email, time.Now().Unix(), int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
+	return fmt.Sprintf("@ IN SOA %s. %s. ( %s %d %d %d %d )", ns, email, d.Serial, int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
+}
+
+type ZoneSerial struct {
+	date time.Time
+	inc  int
+}
+
+func (z *ZoneSerial) Inc() {
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	y, m, d := z.date.Date()
+	y2, m2, d2 := now.Date()
+	if y == y2 && m == m2 && d == d2 {
+		if z.inc == 99 {
+			panic("Zone serial overflow")
+		}
+		z.inc++
+	} else {
+		z.date = now
+		z.inc = 0
+	}
+}
+
+func (z ZoneSerial) String() string {
+	return fmt.Sprintf("%s%02d", z.date.Format("20060102"), z.inc)
+}
+
+func (z *ZoneSerial) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("\"%s\"", z.String())), nil
+}
+
+func (z *ZoneSerial) UnmarshalJSON(b []byte) error {
+	if string(b) == "\"0\"" {
+		z.date = time.Time{}
+		z.inc = 0
+		return nil
+	}
+	if len(b) != 12 {
+		return fmt.Errorf("Invalid zone serial %s", b[1:len(b)-1])
+	}
+	date, err := time.Parse("20060102", string(b[1:9]))
+	if err != nil {
+		return fmt.Errorf("Invalid date section of zone serial %s", b[1:len(b)-1])
+	}
+	inc, err := strconv.Atoi(string(b[9:11]))
+	if err != nil {
+		return fmt.Errorf("Invalid counter section of zone serial %s", b[1:len(b)-1])
+	}
+	z.date = date
+	z.inc = inc
+	return nil
 }
 
 type IPNet struct {
