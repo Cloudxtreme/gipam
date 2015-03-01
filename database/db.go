@@ -263,7 +263,7 @@ func (d *DB) RemoveHost(h *Host) error {
 	}
 	h.parents = nil
 
-	newHosts := make([]*Host, len(d.Hosts)-1)
+	var newHosts []*Host
 	for _, host := range d.Hosts {
 		if h != host {
 			newHosts = append(newHosts, host)
