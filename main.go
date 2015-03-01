@@ -47,6 +47,8 @@ See 'gipam help <command>' for more information on a specific command.
   gipam add host <name> <addr> [(<key> <value>)...]
   gipam add address <addr> <addrs>...
   gipam add domain <name> [--primaryns=NS] [--email=EMAIL] [--slave-refresh=REFRESH] [--slave-retry=RETRY] [--slave-expiry=EXPIRY] [--nxdomain-ttl=TTL]
+  gipam add ns <domain> <ns>...
+  gipam add rr <domain> <rr>...
 
 Options:
  --primaryns=NS          Primary NS (SOA record)
@@ -61,6 +63,8 @@ Options:
   gipam rm host <addr>
   gipam rm address <addr> <addrs>...
   gipam rm domain <domain>
+  gipam rm ns <domain> <ns>...
+  gipam rm rr <domain> <rr>...
 
 Options:
   -r, --recursive  Delete child subnets instead of reparenting
@@ -173,6 +177,12 @@ func Show(db *database.DB, argv []string) {
 			fatal("Domain %s not found in database", name)
 		}
 		fmt.Printf("Name: %s\nSOA: %s\n", name, domain.SOA())
+		for _, ns := range domain.NS {
+			fmt.Printf("NS: %s\n", ns)
+		}
+		for _, rr := range domain.RR {
+			fmt.Printf("RR: %s\n", rr)
+		}
 	default:
 		panic("unreachable")
 	}
@@ -245,6 +255,44 @@ func Add(dbPath string, db *database.DB, argv []string) {
 		}
 		saveDB(dbPath, db)
 		fmt.Printf("Added domain %s\n", name)
+	case args["ns"].(bool):
+		name := args["<domain>"].(string)
+		nss := args["<ns>"].([]string)
+		domain, ok := db.Domains[name]
+		if !ok {
+			fatal("Domain %s not found in database", name)
+		}
+		existing := make(map[string]bool)
+		for _, ns := range domain.NS {
+			existing[ns] = true
+		}
+		for _, ns := range nss {
+			if _, ok = existing[ns]; !ok {
+				existing[ns] = true
+				domain.NS = append(domain.NS, ns)
+			}
+		}
+		saveDB(dbPath, db)
+		fmt.Printf("Added nameservers to domain %s\n", name)
+	case args["rr"].(bool):
+		name := args["<domain>"].(string)
+		rrs := args["<rr>"].([]string)
+		domain, ok := db.Domains[name]
+		if !ok {
+			fatal("Domain %s not found in database", name)
+		}
+		existing := make(map[string]bool)
+		for _, rr := range domain.RR {
+			existing[rr] = true
+		}
+		for _, rr := range rrs {
+			if _, ok = existing[rr]; !ok {
+				existing[rr] = true
+				domain.RR = append(domain.RR, rr)
+			}
+		}
+		saveDB(dbPath, db)
+		fmt.Printf("Added RRs to domain %s\n", name)
 	default:
 		panic("unreachable")
 	}
@@ -299,6 +347,57 @@ func Rm(dbPath string, db *database.DB, argv []string) {
 		}
 		saveDB(dbPath, db)
 		fmt.Printf("Removed domain %s\n", name)
+	case args["ns"].(bool):
+		name := args["<domain>"].(string)
+		nss := args["<ns>"].([]string)
+		domain, ok := db.Domains[name]
+		if !ok {
+			fatal("Domain %s not found in database", name)
+		}
+		existing := make(map[string]bool)
+		for _, ns := range domain.NS {
+			existing[ns] = true
+		}
+		for _, ns := range nss {
+			if _, ok = existing[ns]; ok {
+				delete(existing, ns)
+			} else {
+				fmt.Printf("NS \"%s\" not in DB, ignoring\n", ns)
+			}
+		}
+		var newNS []string
+		for ns := range existing {
+			newNS = append(newNS, ns)
+		}
+		domain.NS = newNS
+		saveDB(dbPath, db)
+		fmt.Printf("Removed nameservers from domain %s\n", name)
+	case args["rr"].(bool):
+		name := args["<domain>"].(string)
+		rrs := args["<rr>"].([]string)
+		domain, ok := db.Domains[name]
+		if !ok {
+			fatal("Domain %s not found in database", name)
+		}
+		existing := make(map[string]bool)
+		for _, rr := range domain.RR {
+			existing[rr] = true
+		}
+		for _, rr := range rrs {
+			if _, ok = existing[rr]; ok {
+				delete(existing, rr)
+			} else {
+				fmt.Printf("RR \"%s\" not in DB, ignoring\n", rr)
+			}
+		}
+		var newRR []string
+		for rr := range existing {
+			newRR = append(newRR, rr)
+		}
+		domain.RR = newRR
+
+		saveDB(dbPath, db)
+		fmt.Printf("Removed RRs to domain %s\n", name)
 	default:
 		panic("unreachable")
 	}
