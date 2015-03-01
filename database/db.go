@@ -369,6 +369,10 @@ func (a *Allocation) Attr(name, dflt string) string {
 	return dflt
 }
 
+func (a *Allocation) Parent() *Allocation {
+	return a.parent
+}
+
 func (a *Allocation) findContainer(n *IPNet) *Allocation {
 	if !a.Net.ContainsNet(n) {
 		return nil
@@ -397,6 +401,10 @@ func (h *Host) Attr(name, dflt string) string {
 		return ret
 	}
 	return dflt
+}
+
+func (h *Host) Parent(ip net.IP) *Allocation {
+	return h.parents[ip.String()]
 }
 
 type Domain struct {
