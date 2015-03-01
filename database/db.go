@@ -289,7 +289,6 @@ func (d *DB) AddHostAddr(h *Host, a net.IP) error {
 }
 
 func (d *DB) RmHostAddr(h *Host, a net.IP) error {
-	fmt.Println(h)
 	alloc, ok := h.parents[a.String()]
 	if !ok {
 		return fmt.Errorf("Host %s doesn't have the address %s", h.Name, a)
