@@ -7,8 +7,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/danderson/gipam/database"
 	docopt "github.com/docopt/docopt-go"
+
+	"github.com/danderson/gipam/database"
+	"github.com/danderson/gipam/export/bind9"
 )
 
 var (
@@ -29,6 +31,7 @@ Available commands:
   rm       Remove an object from the database
   setattr  Set attributes on database objects
   rmattr   Remove attributes on database objects
+  export   Export database data to various formats
   server   Run the GIPAM server
 
 See 'gipam help <command>' for more information on a specific command.
@@ -71,6 +74,7 @@ Options:
 `,
 		"setattr": "Usage: gipam setattr (<cidr> | <addr>) (<key> <value>)...\n",
 		"rmattr":  "Usage: gipam rmattr (<cidr> | <addr>) <key>...\n",
+		"export":  "Usage: gipam export bind9 <domain>\n",
 		"server":  "Usage: gipam server [--addr=0.0.0.0] <port>\n",
 	}
 )
@@ -107,6 +111,8 @@ func main() {
 		SetAttr(dbPath, getDB(dbPath), subcmd)
 	case "rmattr":
 		RmAttr(dbPath, getDB(dbPath), subcmd)
+	case "export":
+		Export(dbPath, getDB(dbPath), subcmd)
 	case "server":
 		Server(dbPath, getDB(dbPath), subcmd)
 	}
@@ -460,6 +466,21 @@ func RmAttr(dbPath string, db *database.DB, argv []string) {
 		fmt.Printf("Edited host %s.\n", host.Name)
 	} else {
 		fatal("Invalid selector %s, must be an IP address or a CIDR prefix", selector)
+	}
+}
+
+func Export(dbPath string, db *database.DB, argv []string) {
+	args := parse(subUsage["export"], argv, false)
+	switch {
+	case args["bind9"].(bool):
+		name := args["<domain>"].(string)
+		zone, err := bind9.ExportZone(db, name)
+		if err != nil {
+			fatal("Export error: %s", err)
+		}
+		fmt.Println(zone)
+	default:
+		panic("unreachable")
 	}
 }
 
