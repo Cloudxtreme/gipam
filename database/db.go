@@ -8,6 +8,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -317,6 +318,15 @@ func (d *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl tim
 		return fmt.Errorf("Domain %s already exists in the database", name)
 	}
 
+	if _, _, err := net.ParseCIDR(name); err == nil {
+		if ns == "" {
+			return fmt.Errorf("Must explicitly specify the primary NS for ARPA domain %s", name)
+		}
+		if email == "" {
+			return fmt.Errorf("Must explicitly specify the email for ARPA domain %s", name)
+		}
+	}
+
 	if refresh == 0 {
 		refresh = time.Hour
 	}
@@ -371,6 +381,10 @@ func (a *Allocation) Attr(name, dflt string) string {
 
 func (a *Allocation) Parent() *Allocation {
 	return a.parent
+}
+
+func (a *Allocation) Hosts() map[string]*Host {
+	return a.hosts
 }
 
 func (a *Allocation) findContainer(n *IPNet) *Allocation {
@@ -434,7 +448,7 @@ func (d *Domain) SOA() string {
 	if ns == "" {
 		ns = fmt.Sprintf("ns1.%s", d.name)
 	}
-	email := d.Email
+	email := strings.Replace(d.Email, "@", ".", -1)
 	if email == "" {
 		email = fmt.Sprintf("hostmaster.%s", d.name)
 	}
