@@ -332,7 +332,6 @@ func (d *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl tim
 	dom := &Domain{
 		PrimaryNS:    ns,
 		Email:        email,
-		Serial:       "0",
 		SlaveRefresh: refresh,
 		SlaveRetry:   retry,
 		SlaveExpiry:  expiry,
@@ -413,7 +412,6 @@ type Domain struct {
 	// SOA parts
 	PrimaryNS    string `json:",omitempty"`
 	Email        string `json:",omitempty"`
-	Serial       string `json:",omitempty"`
 	SlaveRefresh time.Duration
 	SlaveRetry   time.Duration
 	SlaveExpiry  time.Duration
@@ -432,7 +430,7 @@ func (d *Domain) SOA() string {
 	if email == "" {
 		email = fmt.Sprintf("hostmaster.%s", d.name)
 	}
-	return fmt.Sprintf("@ IN SOA %s. %s. ( %s %d %d %d %d )", ns, email, d.Serial, int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
+	return fmt.Sprintf("@ IN SOA %s. %s. ( %d %d %d %d %d )", ns, email, time.Now().Unix(), int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
 }
 
 type IPNet struct {
