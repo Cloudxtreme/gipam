@@ -9,17 +9,20 @@ import (
 	"strings"
 
 	db "github.com/danderson/gipam/database"
+	"github.com/danderson/gipam/export/bind9"
 )
 
 const (
 	allocationPath = "/api/allocation/"
 	hostPath       = "/api/host/"
+	bind9Path      = "/api/export/bind9/"
 )
 
 func runServer(addr string, dbPath string, db *db.DB) {
 	s := &server{db, dbPath}
 	http.HandleFunc(allocationPath, s.Allocation)
 	http.HandleFunc(hostPath, s.Host)
+	http.HandleFunc(bind9Path, s.Bind9)
 	http.Handle("/", http.FileServer(http.Dir("ui")))
 	http.ListenAndServe(addr, nil)
 }
@@ -256,4 +259,14 @@ func (s *server) Host(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (s *server) Bind9(w http.ResponseWriter, r *http.Request) {
+	domain := strings.TrimPrefix(r.URL.Path, bind9Path)
+	zone, err := bind9.ExportZone(s.db, domain)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error exporting zone: %s", err), 500)
+		return
+	}
+	w.Write([]byte(zone))
 }
