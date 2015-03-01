@@ -382,7 +382,7 @@ func fatal(s string, args ...interface{}) {
 func parse(usage string, argv []string, optFirst bool) map[string]interface{} {
 	args, err := docopt.Parse(usage, argv, true, "gipam version 0.1", optFirst)
 	if err != nil {
-		os.Exit(1)
+		fatal("Commandline parser failure: %s", err)
 	}
 	return args
 }
