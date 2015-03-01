@@ -46,7 +46,7 @@ func exportDirect(db *database.DB, domain *database.Domain) (string, error) {
 		fmt.Sprintf("$ORIGIN %s.", domain.Name()),
 		"$TTL 600",
 		domain.SOA(),
-		""
+		"",
 	}
 
 	for _, ns := range domain.NS {
