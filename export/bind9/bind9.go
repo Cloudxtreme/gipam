@@ -9,7 +9,6 @@ import (
 )
 
 // Generate RRs for a domain
-// TODO: generate SOA and NS entries when DB supports it
 func ExportZone(db *db.DB, name string) (string, error) {
 	domain, ok := db.Domains[name]
 	if !ok {
