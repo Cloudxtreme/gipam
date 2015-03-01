@@ -7,12 +7,14 @@ import (
 	"io/ioutil"
 	"net"
 	"sort"
+	"time"
 )
 
 type DB struct {
-	Name   string
-	Allocs []*Allocation
-	Hosts  []*Host
+	Name    string
+	Allocs  []*Allocation
+	Hosts   []*Host
+	Domains map[string]*Domain
 
 	// Index of address to host
 	hostLookup map[string]*Host
@@ -53,6 +55,12 @@ func Load(path string) (*DB, error) {
 			}
 			h.parents[a.String()] = alloc
 		}
+	}
+	if d.Domains == nil {
+		d.Domains = make(map[string]*Domain)
+	}
+	for name, dom := range d.Domains {
+		dom.name = name
 	}
 	return d, nil
 }
@@ -302,6 +310,48 @@ func (d *DB) RmHostAddr(h *Host, a net.IP) error {
 	return nil
 }
 
+func (d *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl time.Duration) error {
+	// TODO: canonicalize domain name, here we're trusting the user to
+	// input the right thing.
+	if _, ok := d.Domains[name]; ok {
+		return fmt.Errorf("Domain %s already exists in the database", name)
+	}
+
+	if refresh == 0 {
+		refresh = time.Hour
+	}
+	if retry == 0 {
+		retry = 15 * time.Minute
+	}
+	if expiry == 0 {
+		expiry = 21 * 24 * time.Hour // 3 weeks
+	}
+	if nxttl == 0 {
+		nxttl = 10 * time.Minute
+	}
+
+	dom := &Domain{
+		PrimaryNS:    ns,
+		Email:        email,
+		Serial:       "0",
+		SlaveRefresh: refresh,
+		SlaveRetry:   retry,
+		SlaveExpiry:  expiry,
+		NXDomainTTL:  nxttl,
+	}
+
+	d.Domains[name] = dom
+	return nil
+}
+
+func (d *DB) RmDomain(name string) error {
+	if _, ok := d.Domains[name]; !ok {
+		return fmt.Errorf("Domain %s does not exist in the database", name)
+	}
+	delete(d.Domains, name)
+	return nil
+}
+
 type Allocation struct {
 	Net      *IPNet
 	Name     string            `json:",omitempty"`
@@ -348,6 +398,34 @@ func (h *Host) Attr(name, dflt string) string {
 		return ret
 	}
 	return dflt
+}
+
+type Domain struct {
+	name string
+
+	// SOA parts
+	PrimaryNS    string `json:",omitempty"`
+	Email        string `json:",omitempty"`
+	Serial       string `json:",omitempty"`
+	SlaveRefresh time.Duration
+	SlaveRetry   time.Duration
+	SlaveExpiry  time.Duration
+	NXDomainTTL  time.Duration
+
+	NS []string `json:",omitempty"`
+	RR []string `json:",omitempty"`
+}
+
+func (d *Domain) SOA() string {
+	ns := d.PrimaryNS
+	if ns == "" {
+		ns = fmt.Sprintf("ns1.%s", d.name)
+	}
+	email := d.Email
+	if email == "" {
+		email = fmt.Sprintf("hostmaster.%s", d.name)
+	}
+	return fmt.Sprintf("@ IN SOA %s. %s. ( %s %d %d %d %d )", ns, email, d.Serial, int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
 }
 
 type IPNet struct {

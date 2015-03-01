@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/danderson/gipam/database"
 	docopt "github.com/docopt/docopt-go"
@@ -35,20 +36,31 @@ See 'gipam help <command>' for more information on a specific command.
 
 	subUsage = map[string]string{
 		"new":  "Usage: gipam new\n",
-		"list": "Usage: gipam list (subnets | hosts)\n",
+		"list": "Usage: gipam list (subnets | hosts | domains)\n",
 		"show": `Usage:
   gipam show subnet <cidr>
   gipam show host <addr>
+  gipam show domain <domain>
 `,
 		"add": `Usage:
   gipam add subnet <name> <cidr> [(<key> <value>)...]
   gipam add host <name> <addr> [(<key> <value>)...]
   gipam add address <addr> <addrs>...
+  gipam add domain <name> [--primaryns=NS] [--email=EMAIL] [--slave-refresh=REFRESH] [--slave-retry=RETRY] [--slave-expiry=EXPIRY] [--nxdomain-ttl=TTL]
+
+Options:
+ --primaryns=NS          Primary NS (SOA record)
+ --email=EMAIL           Hostmaster email (SOA record)
+ --slave-refresh=REFRESH Zone refresh time (SOA record)
+ --slave-retry=RETRY     Slave retry interval (SOA record)
+ --slave-expiry=EXPIRY   Zone expiry time (SOA record)
+ --nxdomain-ttl=TTL      TTL to return on NXDOMAIN responses
 `,
 		"rm": `Usage:
   gipam rm subnet <cidr> [--recursive]
   gipam rm host <addr>
   gipam rm address <addr> <addrs>...
+  gipam rm domain <domain>
 
 Options:
   -r, --recursive  Delete child subnets instead of reparenting
@@ -119,6 +131,10 @@ func List(db *database.DB, argv []string) {
 				fmt.Printf("  %s\n", a)
 			}
 		}
+	case args["domains"].(bool):
+		for name := range db.Domains {
+			fmt.Printf("%s\n", name)
+		}
 	default:
 		panic("unreachable")
 	}
@@ -150,6 +166,13 @@ func Show(db *database.DB, argv []string) {
 		for _, k := range sortedAttrKeys(host.Attrs) {
 			fmt.Printf("%s: %s\n", k, host.Attrs[k])
 		}
+	case args["domain"].(bool):
+		name := args["<domain>"].(string)
+		domain, ok := db.Domains[name]
+		if !ok {
+			fatal("Domain %s not found in database", name)
+		}
+		fmt.Printf("Name: %s\nSOA: %s\n", name, domain.SOA())
 	default:
 		panic("unreachable")
 	}
@@ -190,6 +213,38 @@ func Add(dbPath string, db *database.DB, argv []string) {
 		}
 		saveDB(dbPath, db)
 		fmt.Printf("Added address %s to host %s\n", hostAddr, host.Name)
+	case args["domain"].(bool):
+		name := args["<name>"].(string)
+		if _, ok := db.Domains[name]; ok {
+			fatal("Domain %s already exists in database", name)
+		}
+		var (
+			ns, email                     string
+			refresh, retry, expiry, nxttl time.Duration
+		)
+		if args["--primaryns"] != nil {
+			ns = args["--primaryns"].(string)
+		}
+		if args["--email"] != nil {
+			email = args["--email"].(string)
+		}
+		if args["--slave-refresh"] != nil {
+			refresh = duration(args["--slave-refresh"].(string))
+		}
+		if args["--slave-retry"] != nil {
+			retry = duration(args["--slave-retry"].(string))
+		}
+		if args["--slave-expiry"] != nil {
+			expiry = duration(args["--slave-expiry"].(string))
+		}
+		if args["--nxdomain-ttl"] != nil {
+			nxttl = duration(args["--nxdomain-ttl"].(string))
+		}
+		if err := db.AddDomain(name, ns, email, refresh, retry, expiry, nxttl); err != nil {
+			fatal("Error adding domain: %s", err)
+		}
+		saveDB(dbPath, db)
+		fmt.Printf("Added domain %s\n", name)
 	default:
 		panic("unreachable")
 	}
@@ -234,6 +289,16 @@ func Rm(dbPath string, db *database.DB, argv []string) {
 		}
 		saveDB(dbPath, db)
 		fmt.Printf("Removed address %s from host %s\n", hostAddr, host.Name)
+	case args["domain"].(bool):
+		name := args["<domain>"].(string)
+		if _, ok := db.Domains[name]; !ok {
+			fatal("Domain %s does not exist in database", name)
+		}
+		if err := db.RmDomain(name); err != nil {
+			fatal("Error deleting domain: %s", err)
+		}
+		saveDB(dbPath, db)
+		fmt.Printf("Removed domain %s\n", name)
 	default:
 		panic("unreachable")
 	}
@@ -357,6 +422,14 @@ func cidr(s string) *database.IPNet {
 		fatal("Invalid CIDR prefix %s", s)
 	}
 	return &database.IPNet{net}
+}
+
+func duration(s string) time.Duration {
+	ret, err := time.ParseDuration(s)
+	if err != nil {
+		fatal("Invalid duration %s", err)
+	}
+	return ret
 }
 
 func attrs(ks []string, vs []string) map[string]string {
