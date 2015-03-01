@@ -17,13 +17,19 @@ func ExportZone(db *db.DB, name string) (string, error) {
 	}
 	suffix := "." + name
 
-	ret := []string{domain.SOA()}
+	ret := []string{domain.SOA(), ""}
 
 	for _, ns := range domain.NS {
 		ret = append(ret, fmt.Sprintf("@ IN NS %s.", ns))
 	}
+	if len(domain.NS) > 0 {
+		ret = append(ret, "")
+	}
 	for _, rr := range domain.RR {
 		ret = append(ret, rr)
+	}
+	if len(domain.RR) > 0 {
+		ret = append(ret, "")
 	}
 
 	for _, host := range db.Hosts {
