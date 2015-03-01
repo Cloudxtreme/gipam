@@ -42,7 +42,12 @@ func ExportZone(db *database.DB, name string) (string, error) {
 func exportDirect(db *database.DB, domain *database.Domain) (string, error) {
 	suffix := "." + domain.Name()
 
-	ret := []string{domain.SOA(), ""}
+	ret := []string{
+		fmt.Sprintf("$ORIGIN %s.", domain.Name()),
+		"$TTL 600",
+		domain.SOA(),
+		""
+	}
 
 	for _, ns := range domain.NS {
 		ret = append(ret, fmt.Sprintf("@ IN NS %s.", ns))
@@ -102,6 +107,7 @@ func exportReverse(db *database.DB, domain *database.Domain) (string, error) {
 
 	ret := []string{
 		fmt.Sprintf("$ORIGIN %s", arpaZone(net)),
+		"$TTL 600",
 		domain.SOA(),
 		"",
 	}
