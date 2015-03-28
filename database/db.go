@@ -1,33 +1,30 @@
 package database
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 )
 
 type DB struct {
-	Name    string
-	Allocs  []*Allocation
-	Hosts   []*Host
-	Domains map[string]*Domain
+	Path    string             `json:"-"`
+	Subnets map[string]*Subnet `json:",omitempty"` // cidr->subnet
+	Hosts   []*Host            `json:",omitempty"`
+	Domains map[string]*Domain `json:",omitempty"`
 
-	// Index of address to host
-	hostLookup map[string]*Host
+	ipToHost map[string]*Host
 }
 
-func New(name string) *DB {
+func New() *DB {
 	return &DB{
-		Name:       name,
-		Allocs:     []*Allocation{},
-		Hosts:      []*Host{},
-		hostLookup: make(map[string]*Host),
+		Subnets:  make(map[string]*Subnet),
+		Domains:  make(map[string]*Domain),
+		ipToHost: make(map[string]*Host),
 	}
 }
 
@@ -36,60 +33,132 @@ func Load(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := New("")
-	if err = json.Unmarshal(f, d); err != nil {
+	db, err := LoadBytes(f)
+	if err != nil {
 		return nil, err
 	}
-	// TODO: validate
-	for _, a := range d.Allocs {
-		recursiveSetParent(a, nil)
-	}
-	for _, h := range d.Hosts {
-		if h.Attrs == nil {
-			h.Attrs = make(map[string]string)
-		}
-		h.parents = make(map[string]*Allocation)
-		for _, a := range h.Addrs {
-			d.hostLookup[a.String()] = h
-			alloc := d.FindAllocation(hostToNet(a), false)
-			if alloc != nil {
-				alloc.hosts[a.String()] = h
-			}
-			h.parents[a.String()] = alloc
-		}
-	}
-	if d.Domains == nil {
-		d.Domains = make(map[string]*Domain)
-	}
-	for name, dom := range d.Domains {
-		dom.name = name
-	}
-	return d, nil
+	db.Path = path
+	return db, nil
 }
 
-func recursiveSetParent(a *Allocation, p *Allocation) {
-	a.parent = p
-	a.hosts = make(map[string]*Host)
-	if a.Attrs == nil {
-		a.Attrs = make(map[string]string)
+func LoadBytes(raw []byte) (*DB, error) {
+	ret := New()
+	if err := json.Unmarshal(raw, &ret); err != nil {
+		return nil, err
 	}
-	for _, c := range a.Children {
-		recursiveSetParent(c, a)
+
+	recLinkSubnets(ret, ret.Subnets, nil)
+
+	for _, host := range ret.Hosts {
+		for addr := range host.Addrs {
+			ret.ipToHost[addr] = host
+		}
+		if host.Addrs == nil {
+			host.Addrs = make(HostAddrs)
+		}
+		host.db = ret
+		if host.Attrs == nil {
+			host.Attrs = make(map[string]string)
+		}
+	}
+
+	for _, dom := range ret.Domains {
+		dom.db = ret
+	}
+
+	if err := ret.validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %s", err)
+	}
+
+	return ret, nil
+}
+
+func recLinkSubnets(db *DB, subnets map[string]*Subnet, parent *Subnet) {
+	for _, s := range subnets {
+		if s.Subnets == nil {
+			s.Subnets = make(map[string]*Subnet)
+		}
+		if s.Attrs == nil {
+			s.Attrs = make(map[string]string)
+		}
+		s.Parent = parent
+		s.db = db
+		recLinkSubnets(db, s.Subnets, s)
 	}
 }
 
-func (d *DB) Save(path string) error {
-	f, err := json.MarshalIndent(d, "", "  ")
+func (db *DB) Save() error {
+	if db.Path == "" {
+		return errors.New("No database path defined")
+	}
+	f, err := db.Bytes()
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(path, f, 0640)
+	return ioutil.WriteFile(db.Path, f, 0640)
 }
 
-func (d *DB) FindAllocation(n *IPNet, exact bool) *Allocation {
-	for _, a := range d.Allocs {
-		if ret := a.findContainer(n); ret != nil {
-			if exact && !ret.Net.Equal(n) {
+func (db *DB) Bytes() ([]byte, error) {
+	if err := db.validate(); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(db, "", "  ")
+}
+
+func (db *DB) validate() error {
+	for name, dom := range db.Domains {
+		if name != dom.Name {
+			return fmt.Errorf("domain %s has map key %s", dom.Name, name)
+		}
+		if dom.db != db {
+			return fmt.Errorf("domain %s belongs to DB %s, want %s", dom.Name, dom.db, db)
+		}
+	}
+
+	for _, host := range db.Hosts {
+		for _, addr := range host.Addrs {
+			h, ok := db.ipToHost[addr.String()]
+			if !ok {
+				return fmt.Errorf("host %s's address %s missing from lookup table", host.Name, addr)
+			}
+			if h != host {
+				return fmt.Errorf("host %s's address %s points to host %#v in lookup table", host.Name, addr, h)
+			}
+			if host.db != db {
+				return fmt.Errorf("host %s belongs to DB %s, want %s", host.Name, host.db, db)
+			}
+		}
+	}
+
+	return recValidateSubnets(db, db.Subnets, nil)
+}
+
+func recValidateSubnets(db *DB, subnets map[string]*Subnet, parent *Subnet) error {
+	for k, subnet := range subnets {
+		if subnet.Net.String() != k {
+			return fmt.Errorf("subnet %s has map key %s", subnet.Net, k)
+		}
+		if subnet.Parent != parent {
+			return fmt.Errorf("subnet %s has parent %s, want %s", subnet.Net, subnet.Parent, parent)
+		}
+		if subnet.db != db {
+			return fmt.Errorf("subnet %s belongs to DB %s, want %s", subnet.Net, subnet.db, db)
+		}
+		if err := recValidateSubnets(db, subnet.Subnets, subnet); err != nil {
+			return err
+		}
+		// TODO: check for bad siblings (that should be children of another sibling)
+	}
+	return nil
+}
+
+// Lookup funcs
+
+func (db *DB) Subnet(net *net.IPNet, exact bool) *Subnet {
+	n := (*IPNet)(net)
+	for _, subnet := range db.Subnets {
+		if ret := subnet.findSubnet(n); ret != nil {
+			if exact && !(*IPNet)(ret.Net).Equal(n) {
 				return nil
 			}
 			return ret
@@ -98,223 +167,82 @@ func (d *DB) FindAllocation(n *IPNet, exact bool) *Allocation {
 	return nil
 }
 
-func (d *DB) FindHost(addr net.IP) *Host {
-	return d.hostLookup[addr.String()]
-}
-
-// addChildren adds viable allocations from candidates as children of
-// alloc. Mutates alloc.Children and returns the non-viable
-// candidates.
-func addChildren(alloc *Allocation, candidates []*Allocation) []*Allocation {
-	var ret []*Allocation
-	for _, a := range candidates {
-		if alloc.Net.ContainsNet(a.Net) {
-			alloc.Children = append(alloc.Children, a)
-			a.parent = alloc
-		} else {
-			ret = append(ret, a)
-		}
-	}
-	sort.Sort(allocSort(alloc.Children))
-	return ret
-}
-
-func (d *DB) AddAllocation(name string, network *IPNet, attrs map[string]string) error {
-	if ishost(network) {
-		return fmt.Errorf("Cannot allocate %s as an allocation, because it's a host address", network)
-	}
-	alloc := &Allocation{
-		Net:   network,
-		Name:  name,
-		Attrs: attrs,
-		hosts: make(map[string]*Host),
-	}
-	parent := d.FindAllocation(alloc.Net, false)
-	if parent == nil {
-		d.Allocs = addChildren(alloc, d.Allocs)
-		d.Allocs = append(d.Allocs, alloc)
-		sort.Sort(allocSort(d.Allocs))
-		for _, h := range d.Hosts {
-			for ipStr, parent := range h.parents {
-				if parent != nil {
-					continue
-				}
-
-				ip := net.ParseIP(ipStr)
-				if ip == nil {
-					panic("Bad IP found in DB")
-				}
-				if alloc.Net.Contains(ip) {
-					alloc.hosts[ipStr] = h
-					h.parents[ipStr] = alloc
-				}
-			}
-		}
-		// TODO: more complex host reparenting
-	} else if parent.Net.Equal(alloc.Net) {
-		return fmt.Errorf("%s already allocated as \"%s\"", parent.Net, parent.Name)
-	} else {
-		parent.Children = addChildren(alloc, parent.Children)
-		parent.Children = append(parent.Children, alloc)
-		sort.Sort(allocSort(parent.Children))
-		alloc.parent = parent
-		for ipStr, host := range parent.hosts {
-			ip := net.ParseIP(ipStr)
-			if ip == nil {
-				panic("Bad IP found in DB")
-			}
-			if alloc.Net.Contains(ip) {
-				delete(parent.hosts, ipStr)
-				alloc.hosts[ipStr] = host
-				host.parents[ipStr] = alloc
-			}
-		}
+func (db *DB) Host(ip net.IP) *Host {
+	if h, ok := db.ipToHost[ip.String()]; ok {
+		return h
 	}
 	return nil
 }
 
-func removeAlloc(as []*Allocation, a *Allocation) []*Allocation {
-	var ret []*Allocation
-	for _, b := range as {
-		if a != b {
-			ret = append(ret, b)
-		}
+func (db *DB) Domain(name string) *Domain {
+	if dom, ok := db.Domains[name]; ok {
+		return dom
 	}
-	return ret
+	return nil
 }
 
-func (d *DB) RemoveAllocation(a *Allocation, reparentChildren bool) error {
-	c := d.FindAllocation(a.Net, true)
-	if c == nil {
-		return fmt.Errorf("Allocation %s is not part of this DB", a.Net)
+// Adders
+
+func (db *DB) AddSubnet(name string, net *net.IPNet, attrs map[string]string) error {
+	if o, b := net.Mask.Size(); o == b {
+		return fmt.Errorf("Cannot allocate %s as a subnet, because it's a host address", net)
 	}
-	if a.parent == nil {
-		d.Allocs = removeAlloc(d.Allocs, c)
-		if reparentChildren {
-			d.Allocs = append(d.Allocs, c.Children...)
-			for _, a := range d.Allocs {
-				a.parent = nil
-			}
-			sort.Sort(allocSort(d.Allocs))
-		}
-		for ip, host := range c.hosts {
-			host.parents[ip] = nil
-		}
-	} else {
-		a.parent.Children = removeAlloc(a.parent.Children, c)
-		if reparentChildren {
-			a.parent.Children = append(a.parent.Children, c.Children...)
-			for _, c := range a.parent.Children {
-				c.parent = a.parent
-			}
-			sort.Sort(allocSort(a.parent.Children))
-		}
-		for ip, host := range c.hosts {
-			host.parents[ip] = a.parent
-			a.parent.hosts[ip] = host
+	sub := &Subnet{
+		Net:     (*IPNet)(net),
+		Name:    name,
+		Attrs:   attrs,
+		Subnets: make(map[string]*Subnet),
+		db:      db,
+	}
+
+	sub.Parent = db.Subnet(net, false)
+	if sub.Parent != nil && sub.Parent.Net.Equal(sub.Net) {
+		return fmt.Errorf("Subnet %s already allocated", net)
+	}
+
+	m := db.Subnets
+	if sub.Parent != nil {
+		m = sub.Parent.Subnets
+	}
+	for k, subnet := range m {
+		if sub.Net.ContainsIPNet(subnet.Net) {
+			sub.Subnets[k] = subnet
+			subnet.Parent = sub
+			delete(m, k)
 		}
 	}
-	a.Children = nil
-	a.parent = nil
+	m[net.String()] = sub
 
 	return nil
 }
 
-func (d *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error {
-	if len(addrs) == 0 {
-		return fmt.Errorf("Hosts must have at least one IP address")
-	}
-	for _, a := range addrs {
-		if h, ok := d.hostLookup[a.String()]; ok {
-			return fmt.Errorf("Cannot add host '%s': address %s already belongs to '%s'", name, a, h.Name)
+func (db *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error {
+	for _, addr := range addrs {
+		if h, ok := db.ipToHost[addr.String()]; ok {
+			return fmt.Errorf("Address %s already in use by host %s", addr, h.Name)
 		}
 	}
 
 	h := &Host{
-		Name:    name,
-		Addrs:   addrs,
-		Attrs:   attrs,
-		parents: make(map[string]*Allocation),
+		Name:  name,
+		Addrs: make(HostAddrs),
+		Attrs: attrs,
+		db:    db,
 	}
 
-	for _, a := range addrs {
-		d.hostLookup[a.String()] = h
-		alloc := d.FindAllocation(hostToNet(a), false)
-		if alloc != nil {
-			alloc.hosts[a.String()] = h
-		}
-		h.parents[a.String()] = alloc
+	db.Hosts = append(db.Hosts, h)
+	for _, addr := range addrs {
+		h.AddAddress(addr)
 	}
-
-	d.Hosts = append(d.Hosts, h)
-	return nil
-}
-
-func (d *DB) RemoveHost(h *Host) error {
-	for _, ip := range h.Addrs {
-		if d.FindHost(ip) != h {
-			return fmt.Errorf("Host with IP %s is not part of this DB", ip)
-		}
-	}
-
-	for ip, alloc := range h.parents {
-		if alloc != nil {
-			delete(alloc.hosts, ip)
-		}
-		delete(d.hostLookup, ip)
-	}
-	h.parents = nil
-
-	var newHosts []*Host
-	for _, host := range d.Hosts {
-		if h != host {
-			newHosts = append(newHosts, host)
-		}
-	}
-	d.Hosts = newHosts
-	return nil
-}
-
-func (d *DB) AddHostAddr(h *Host, a net.IP) error {
-	other := d.FindHost(a)
-	if other != nil {
-		return fmt.Errorf("Other host %s already has the address %s", other.Name, a)
-	}
-	alloc := d.FindAllocation(hostToNet(a), false)
-	if alloc != nil {
-		alloc.hosts[a.String()] = h
-	}
-	h.parents[a.String()] = alloc
-	h.Addrs = append(h.Addrs, a)
-	d.hostLookup[a.String()] = h
-	return nil
-}
-
-func (d *DB) RmHostAddr(h *Host, a net.IP) error {
-	alloc, ok := h.parents[a.String()]
-	if !ok {
-		return fmt.Errorf("Host %s doesn't have the address %s", h.Name, a)
-	}
-	if alloc != nil {
-		delete(alloc.hosts, a.String())
-	}
-	delete(h.parents, a.String())
-	delete(d.hostLookup, a.String())
-	var newAddrs []net.IP
-	for _, addr := range h.Addrs {
-		if !addr.Equal(a) {
-			newAddrs = append(newAddrs, addr)
-		}
-	}
-	h.Addrs = newAddrs
 
 	return nil
 }
 
-func (d *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl time.Duration) error {
+func (db *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl time.Duration) error {
 	// TODO: canonicalize domain name, here we're trusting the user to
 	// input the right thing.
-	if _, ok := d.Domains[name]; ok {
+
+	if _, ok := db.Domains[name]; ok {
 		return fmt.Errorf("Domain %s already exists in the database", name)
 	}
 
@@ -327,6 +255,12 @@ func (d *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl tim
 		}
 	}
 
+	if ns == "" {
+		ns = "ns1." + name
+	}
+	if email == "" {
+		email = "hostmaster." + name
+	}
 	if refresh == 0 {
 		refresh = time.Hour
 	}
@@ -341,92 +275,121 @@ func (d *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl tim
 	}
 
 	dom := &Domain{
+		Name:         name,
 		PrimaryNS:    ns,
 		Email:        email,
 		SlaveRefresh: refresh,
 		SlaveRetry:   retry,
 		SlaveExpiry:  expiry,
 		NXDomainTTL:  nxttl,
+
+		db: db,
 	}
 
-	d.Domains[name] = dom
+	db.Domains[name] = dom
 	return nil
 }
 
-func (d *DB) RmDomain(name string) error {
-	if _, ok := d.Domains[name]; !ok {
-		return fmt.Errorf("Domain %s does not exist in the database", name)
-	}
-	delete(d.Domains, name)
-	return nil
-}
+// Major datatypes
 
-type Allocation struct {
-	Net      *IPNet
-	Name     string            `json:",omitempty"`
-	Attrs    map[string]string `json:",omitempty"`
-	Children []*Allocation     `json:",omitempty"`
-
-	parent *Allocation
-	// Index of IP to host
-	hosts map[string]*Host
-}
-
-func (a *Allocation) Attr(name, dflt string) string {
-	if ret, ok := a.Attrs[name]; ok {
-		return ret
-	}
-	return dflt
-}
-
-func (a *Allocation) Parent() *Allocation {
-	return a.parent
-}
-
-func (a *Allocation) Hosts() map[string]*Host {
-	return a.hosts
-}
-
-func (a *Allocation) findContainer(n *IPNet) *Allocation {
-	if !a.Net.ContainsNet(n) {
-		return nil
-	}
-
-	for _, c := range a.Children {
-		if child := c.findContainer(n); child != nil {
-			return child
-		}
-	}
-
-	return a
-}
-
-type Host struct {
-	Addrs []net.IP
+type Subnet struct {
 	Name  string            `json:",omitempty"`
 	Attrs map[string]string `json:",omitempty"`
 
-	// Index of IP to its parent allocation
-	parents map[string]*Allocation
+	// Consider these read-only.
+	Net     *IPNet
+	Subnets map[string]*Subnet `json:",omitempty"` // cidr->Subnet
+	Parent  *Subnet            `json:"-"`
+
+	db *DB
 }
 
-func (h *Host) Attr(name, dflt string) string {
-	if ret, ok := h.Attrs[name]; ok {
-		return ret
+func (s *Subnet) Delete(recursive bool) {
+	m := s.db.Subnets
+	if s.Parent != nil {
+		m = s.Parent.Subnets
 	}
-	return dflt
+	delete(m, s.Net.String())
+
+	if !recursive {
+		for k, subnet := range s.Subnets {
+			m[k] = subnet
+			subnet.Parent = s.Parent
+		}
+	}
 }
 
-func (h *Host) Parent(ip net.IP) *Allocation {
-	return h.parents[ip.String()]
+func (s *Subnet) findSubnet(n *IPNet) *Subnet {
+	if !s.Net.ContainsIPNet(n) {
+		return nil
+	}
+
+	for _, child := range s.Subnets {
+		if ret := child.findSubnet(n); ret != nil {
+			return ret
+		}
+	}
+
+	return s
+}
+
+type Host struct {
+	Addrs HostAddrs
+	Name  string            `json:",omitempty"`
+	Attrs map[string]string `json:",omitempty"`
+
+	db *DB
+}
+
+func (h *Host) Delete() {
+	for _, addr := range h.Addrs {
+		delete(h.db.ipToHost, addr.String())
+	}
+	var newHosts []*Host
+	for _, host := range h.db.Hosts {
+		if host != h {
+			newHosts = append(newHosts, host)
+		}
+	}
+	h.db.Hosts = newHosts
+}
+
+func (h *Host) AddAddress(addr net.IP) error {
+	if h, ok := h.db.ipToHost[addr.String()]; ok {
+		return fmt.Errorf("address %s already allocated to %s", addr, h.Name)
+	}
+	h.Addrs[addr.String()] = addr
+	h.db.ipToHost[addr.String()] = h
+	return nil
+}
+
+func (h *Host) RemoveAddress(addr net.IP) error {
+	if _, ok := h.Addrs[addr.String()]; !ok {
+		return fmt.Errorf("address %s does not belong to %s", addr, h)
+	}
+	delete(h.Addrs, addr.String())
+	delete(h.db.ipToHost, addr.String())
+	return nil
+}
+
+func (h *Host) Parent(ip net.IP) *Subnet {
+	if _, ok := h.Addrs[ip.String()]; !ok {
+		return nil
+	}
+
+	maskLen := 128
+	if isv4(ip) {
+		maskLen = 32
+	}
+	return h.db.Subnet(&net.IPNet{ip, net.CIDRMask(maskLen, maskLen)}, false)
 }
 
 type Domain struct {
-	name string
+	Name string
 
 	// SOA parts
-	PrimaryNS    string `json:",omitempty"`
-	Email        string `json:",omitempty"`
+	PrimaryNS    string
+	Email        string
 	SlaveRefresh time.Duration
 	SlaveRetry   time.Duration
 	SlaveExpiry  time.Duration
@@ -437,22 +400,82 @@ type Domain struct {
 
 	NS []string `json:",omitempty"`
 	RR []string `json:",omitempty"`
+
+	db *DB
 }
 
-func (d *Domain) Name() string {
-	return d.name
+func (d *Domain) Delete() {
+	delete(d.db.Domains, d.Name)
 }
 
 func (d *Domain) SOA() string {
-	ns := d.PrimaryNS
-	if ns == "" {
-		ns = fmt.Sprintf("ns1.%s", d.name)
+	return fmt.Sprintf("@ IN SOA %s. %s. ( %s %d %d %d %d )", d.PrimaryNS, d.Email, d.Serial, int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
+}
+
+// Misc. types
+
+type IPNet net.IPNet
+
+func (n *IPNet) String() string {
+	return (*net.IPNet)(n).String()
+}
+
+func (n *IPNet) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("\"%s\"", n)), nil
+}
+
+func (n *IPNet) UnmarshalJSON(b []byte) error {
+	_, net, err := net.ParseCIDR(string(b[1 : len(b)-1]))
+	if err != nil {
+		return err
 	}
-	email := strings.Replace(d.Email, "@", ".", -1)
-	if email == "" {
-		email = fmt.Sprintf("hostmaster.%s", d.name)
+	*n = IPNet(*net)
+	return nil
+}
+
+func (n *IPNet) Equal(n2 *IPNet) bool {
+	return (*net.IPNet)(n).String() == (*net.IPNet)(n2).String()
+}
+
+func (n *IPNet) Contains(ip net.IP) bool {
+	return ip.Mask(n.Mask).Equal(n.IP)
+}
+
+func (n *IPNet) ContainsIPNet(n2 *IPNet) bool {
+	if isv4(n.IP) != isv4(n2.IP) {
+		return false
 	}
-	return fmt.Sprintf("@ IN SOA %s. %s. ( %s %d %d %d %d )", ns, email, d.Serial, int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
+
+	m1, _ := n.Mask.Size()
+	m2, _ := n2.Mask.Size()
+	return m2 >= m1 && n.IP.Mask(n.Mask).Equal(n2.IP.Mask(n.Mask))
+}
+
+type HostAddrs map[string]net.IP
+
+func (h HostAddrs) MarshalJSON() ([]byte, error) {
+	var sorted []string
+	for k := range h {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	var out []net.IP
+	for _, k := range sorted {
+		out = append(out, h[k])
+	}
+	return json.Marshal(out)
+}
+
+func (h *HostAddrs) UnmarshalJSON(b []byte) error {
+	var in []net.IP
+	if err := json.Unmarshal(b, &in); err != nil {
+		return err
+	}
+	*h = make(HostAddrs)
+	for _, ip := range in {
+		(*h)[ip.String()] = ip
+	}
+	return nil
 }
 
 type ZoneSerial struct {
@@ -473,6 +496,13 @@ func (z *ZoneSerial) Inc() {
 		z.date = now
 		z.inc = 0
 	}
+}
+
+func (z ZoneSerial) Before(oz ZoneSerial) bool {
+	if z.date.Before(oz.date) {
+		return true
+	}
+	return z.inc < oz.inc
 }
 
 func (z ZoneSerial) String() string {
@@ -505,112 +535,6 @@ func (z *ZoneSerial) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-type IPNet struct {
-	*net.IPNet
-}
-
-func (n *IPNet) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf("\"%s\"", n)), nil
-}
-
-func (n *IPNet) UnmarshalJSON(b []byte) error {
-	_, net, err := net.ParseCIDR(string(b[1 : len(b)-1]))
-	if err != nil {
-		return err
-	}
-	*n = IPNet{net}
-	return nil
-}
-
-func (n *IPNet) ContainsNet(n2 *IPNet) bool {
-	if isv4(n.IP) != isv4(n2.IP) {
-		return false
-	}
-
-	o1, _ := n.Mask.Size()
-	o2, _ := n2.Mask.Size()
-	return o2 >= o1 && n.IP.Mask(n.Mask).Equal(n2.IP.Mask(n.Mask))
-}
-
-func (n *IPNet) Equal(n2 *IPNet) bool {
-	return n.ContainsNet(n2) && n2.ContainsNet(n)
-}
-
-func (n *IPNet) Less(n2 *IPNet) bool {
-	if isv4(n.IP) != isv4(n2.IP) {
-		return isv4(n.IP)
-	}
-
-	o1, _ := n.Mask.Size()
-	o2, _ := n.Mask.Size()
-	if o1 < o2 {
-		return true
-	}
-
-	i1 := n.IP.Mask(n.Mask).To16()
-	i2 := n2.IP.Mask(n2.Mask).To16()
-	return bytes.Compare(i1, i2) < 0
-}
-
-func (n *IPNet) FirstAddr() net.IP {
-	return n.IP.Mask(n.Mask)
-}
-
-func (n *IPNet) LastAddr() net.IP {
-	ret := n.IP.Mask(n.Mask)
-	if isv4(ret) {
-		ret = ret.To4()
-	}
-	ones, bits := n.Mask.Size()
-	zeros := bits - ones
-	for i := range ret {
-		ones -= 8
-		if ones < 0 {
-			if zeros%8 == 0 {
-				ret[i] = 0xff
-				zeros -= 8
-			} else {
-				ret[i] |= (1 << uint(zeros%8)) - 1
-				zeros -= zeros % 8
-			}
-		}
-	}
-	return ret
-}
-
 func isv4(ip net.IP) bool {
 	return ip.To4() != nil
-}
-
-func ishost(n *IPNet) bool {
-	ones, bits := n.Mask.Size()
-	return ones == bits
-}
-
-func hostToNet(i net.IP) *IPNet {
-	n := &IPNet{&net.IPNet{
-		IP: i,
-	}}
-	if isv4(i) {
-		n.Mask = net.CIDRMask(32, 32)
-	} else {
-		n.Mask = net.CIDRMask(128, 128)
-	}
-	return n
-}
-
-// TODO: make this sort by CIDR prefix correctly, rather than just
-// textually.
-type allocSort []*Allocation
-
-func (a allocSort) Len() int {
-	return len(a)
-}
-
-func (a allocSort) Less(i, j int) bool {
-	return a[i].Net.Less(a[j].Net)
-}
-
-func (a allocSort) Swap(i, j int) {
-	a[i], a[j] = a[j], a[i]
 }

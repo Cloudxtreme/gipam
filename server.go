@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	allocationPath = "/api/allocation/"
-	hostPath       = "/api/host/"
-	bind9Path      = "/api/export/bind9/"
+	subnetPath = "/api/subnet/"
+	hostPath   = "/api/host/"
+	bind9Path  = "/api/export/bind9/"
 )
 
-func runServer(addr string, dbPath string, db *db.DB) {
-	s := &server{db, dbPath}
-	http.HandleFunc(allocationPath, s.Allocation)
+func runServer(addr string, db *db.DB) {
+	s := &server{db}
+	http.HandleFunc(subnetPath, s.Subnet)
 	http.HandleFunc(hostPath, s.Host)
 	http.HandleFunc(bind9Path, s.Bind9)
 	http.Handle("/", http.FileServer(http.Dir("ui")))
@@ -28,8 +28,7 @@ func runServer(addr string, dbPath string, db *db.DB) {
 }
 
 type server struct {
-	db   *db.DB
-	path string
+	db *db.DB
 }
 
 func writeJSON(w http.ResponseWriter, obj interface{}) {
@@ -42,28 +41,28 @@ func writeJSON(w http.ResponseWriter, obj interface{}) {
 	w.Write(f)
 }
 
-func (s *server) Allocation(w http.ResponseWriter, r *http.Request) {
+func (s *server) Subnet(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
+		cidr := strings.TrimPrefix(r.URL.Path, subnetPath)
 		if cidr == "" {
-			writeJSON(w, s.db.Allocs)
+			writeJSON(w, s.db.Subnets)
 		} else {
 			_, net, err := net.ParseCIDR(cidr)
 			if err != nil {
 				http.Error(w, "Malformed CIDR prefix", 400)
 				return
 			}
-			alloc := s.db.FindAllocation(&db.IPNet{net}, true)
-			if alloc == nil {
-				http.Error(w, fmt.Sprintf("Allocation %s does not exist", net), 404)
+			subnet := s.db.Subnet(net, true)
+			if subnet == nil {
+				http.Error(w, fmt.Sprintf("Subnet %s does not exist", net), 404)
 				return
 			}
-			writeJSON(w, alloc)
+			writeJSON(w, subnet)
 		}
 	case "POST":
-		if strings.TrimPrefix(r.URL.Path, allocationPath) != "" {
-			http.Error(w, fmt.Sprintf("Can only POST new allocations to %s", allocationPath), 400)
+		if strings.TrimPrefix(r.URL.Path, subnetPath) != "" {
+			http.Error(w, fmt.Sprintf("Can only POST new subnets to %s", subnetPath), 400)
 			return
 		}
 		var req struct {
@@ -75,18 +74,18 @@ func (s *server) Allocation(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bad JSON value in body", 400)
 			return
 		}
-		if err := s.db.AddAllocation(req.Name, req.Net, req.Attrs); err != nil {
+		if err := s.db.AddSubnet(req.Name, (*net.IPNet)(req.Net), req.Attrs); err != nil {
 			http.Error(w, fmt.Sprintf("Allocation of %s failed: %s", req.Net, err), 500)
 			return
 		}
-		if err := s.db.Save(s.path); err != nil {
+		if err := s.db.Save(); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
 
-		writeJSON(w, s.db.FindAllocation(req.Net, true))
+		writeJSON(w, s.db.Subnet((*net.IPNet)(req.Net), true))
 	case "PUT":
-		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
+		cidr := strings.TrimPrefix(r.URL.Path, subnetPath)
 		if cidr == "" {
 			http.Error(w, "Can only PUT to edit a specific prefix", 400)
 			return
@@ -105,22 +104,22 @@ func (s *server) Allocation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		alloc := s.db.FindAllocation(&db.IPNet{net}, true)
-		if alloc == nil {
-			http.Error(w, "Allocation %s does not exist", 404)
+		subnet := s.db.Subnet(net, true)
+		if subnet == nil {
+			http.Error(w, "Subnet %s does not exist", 404)
 			return
 		}
-		alloc.Name = req.Name
-		alloc.Attrs = req.Attrs
+		subnet.Name = req.Name
+		subnet.Attrs = req.Attrs
 
-		if err := s.db.Save(s.path); err != nil {
+		if err := s.db.Save(); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
 
-		writeJSON(w, alloc)
+		writeJSON(w, subnet)
 	case "DELETE":
-		cidr := strings.TrimPrefix(r.URL.Path, allocationPath)
+		cidr := strings.TrimPrefix(r.URL.Path, subnetPath)
 		if cidr == "" {
 			http.Error(w, "Can only DELETE to delete a specific prefix", 400)
 			return
@@ -132,17 +131,15 @@ func (s *server) Allocation(w http.ResponseWriter, r *http.Request) {
 		}
 		reparent := r.URL.Query().Get("reparent") != ""
 
-		alloc := s.db.FindAllocation(&db.IPNet{net}, true)
-		if alloc == nil {
-			http.Error(w, "Allocation %s does not exist", 404)
+		subnet := s.db.Subnet(net, true)
+		if subnet == nil {
+			http.Error(w, "Subnet %s does not exist", 404)
 			return
 		}
 
-		if err := s.db.RemoveAllocation(alloc, reparent); err != nil {
-			http.Error(w, "Allocation removal failed", 500)
-		}
+		subnet.Delete(!reparent)
 
-		if err := s.db.Save(s.path); err != nil {
+		if err := s.db.Save(); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -161,7 +158,7 @@ func (s *server) Host(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Malformed IP address", 400)
 				return
 			}
-			host := s.db.FindHost(ip)
+			host := s.db.Host(ip)
 			if host == nil {
 				http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
 				return
@@ -186,12 +183,12 @@ func (s *server) Host(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Adding host %s failed: %s", req.Name, err), 500)
 			return
 		}
-		if err := s.db.Save(s.path); err != nil {
+		if err := s.db.Save(); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
 
-		writeJSON(w, s.db.FindHost(req.Addrs[0]))
+		writeJSON(w, s.db.Host(req.Addrs[0]))
 	case "PUT":
 		addr := strings.TrimPrefix(r.URL.Path, hostPath)
 		if addr == "" {
@@ -213,20 +210,18 @@ func (s *server) Host(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		host := s.db.FindHost(ip)
+		host := s.db.Host(ip)
 		if host == nil {
 			http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
 			return
 		}
 
 		// TODO: needs atomicity here, i.e. a way to roll back the partial edit.
-		if err := s.db.RemoveHost(host); err != nil {
-			http.Error(w, fmt.Sprintf("Editing host %s failed: %s", host.Name, err), 500)
-		}
+		host.Delete()
 		if err := s.db.AddHost(req.Name, req.Addrs, req.Attrs); err != nil {
 			http.Error(w, fmt.Sprintf("Editing host %s failed: %s", host.Name, err), 500)
 		}
-		if err := s.db.Save(s.path); err != nil {
+		if err := s.db.Save(); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -244,17 +239,15 @@ func (s *server) Host(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		host := s.db.FindHost(ip)
+		host := s.db.Host(ip)
 		if host == nil {
 			http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
 			return
 		}
 
-		if err := s.db.RemoveHost(host); err != nil {
-			http.Error(w, "Host removal failed", 500)
-		}
+		host.Delete()
 
-		if err := s.db.Save(s.path); err != nil {
+		if err := s.db.Save(); err != nil {
 			http.Error(w, "Couldn't save change", 500)
 			return
 		}
@@ -263,7 +256,7 @@ func (s *server) Host(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) Bind9(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, bind9Path)
-	zone, err := bind9.ExportZone(s.db, domain)
+	zone, err := bind9.ExportZone(s.db, domain, false)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error exporting zone: %s", err), 500)
 		return

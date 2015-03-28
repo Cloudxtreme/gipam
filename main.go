@@ -74,7 +74,7 @@ Options:
 `,
 		"setattr": "Usage: gipam setattr (<cidr> | <addr>) (<key> <value>)...\n",
 		"rmattr":  "Usage: gipam rmattr (<cidr> | <addr>) <key>...\n",
-		"export":  "Usage: gipam export bind9 <domain>\n",
+		"export":  "Usage: gipam export bind9 [--force] <domain>\n",
 		"server":  "Usage: gipam server [--addr=0.0.0.0] <port>\n",
 	}
 )
@@ -104,17 +104,17 @@ func main() {
 	case "show":
 		Show(getDB(dbPath), subcmd)
 	case "add":
-		Add(dbPath, getDB(dbPath), subcmd)
+		Add(getDB(dbPath), subcmd)
 	case "rm":
-		Rm(dbPath, getDB(dbPath), subcmd)
+		Rm(getDB(dbPath), subcmd)
 	case "setattr":
-		SetAttr(dbPath, getDB(dbPath), subcmd)
+		SetAttr(getDB(dbPath), subcmd)
 	case "rmattr":
-		RmAttr(dbPath, getDB(dbPath), subcmd)
+		RmAttr(getDB(dbPath), subcmd)
 	case "export":
-		Export(dbPath, getDB(dbPath), subcmd)
+		Export(getDB(dbPath), subcmd)
 	case "server":
-		Server(dbPath, getDB(dbPath), subcmd)
+		Server(getDB(dbPath), subcmd)
 	}
 }
 
@@ -133,7 +133,7 @@ func List(db *database.DB, argv []string) {
 	args := parse(subUsage["list"], argv, false)
 	switch {
 	case args["subnets"].(bool):
-		allocsAsTree(db.Allocs, "")
+		subnetsAsTree(db.Subnets, "")
 	case args["hosts"].(bool):
 		for _, h := range db.Hosts {
 			fmt.Printf("%s\n", h.Name)
@@ -155,17 +155,17 @@ func Show(db *database.DB, argv []string) {
 	switch {
 	case args["subnet"].(bool):
 		cidr := cidr(args["<cidr>"].(string))
-		alloc := db.FindAllocation(cidr, true)
-		if alloc == nil {
+		subnet := db.Subnet(cidr, true)
+		if subnet == nil {
 			fatal("Subnet %s not found in database", cidr)
 		}
-		fmt.Printf("Name: %s\nPrefix: %s\n", alloc.Name, alloc.Net)
-		for _, k := range sortedAttrKeys(alloc.Attrs) {
-			fmt.Printf("%s: %s\n", k, alloc.Attrs[k])
+		fmt.Printf("Name: %s\nPrefix: %s\n", subnet.Name, subnet.Net)
+		for _, k := range sortedAttrKeys(subnet.Attrs) {
+			fmt.Printf("%s: %s\n", k, subnet.Attrs[k])
 		}
 	case args["host"].(bool):
 		addr := addr(args["<addr>"].(string))
-		host := db.FindHost(addr)
+		host := db.Host(addr)
 		if host == nil {
 			fatal("Host with IP address %s not found in database", addr)
 		}
@@ -182,7 +182,7 @@ func Show(db *database.DB, argv []string) {
 		if !ok {
 			fatal("Domain %s not found in database", name)
 		}
-		fmt.Printf("Name: %s\nSOA: %s\n", name, domain.SOA())
+		fmt.Printf("Name: %s", name)
 		for _, ns := range domain.NS {
 			fmt.Printf("NS: %s\n", ns)
 		}
@@ -194,17 +194,17 @@ func Show(db *database.DB, argv []string) {
 	}
 }
 
-func Add(dbPath string, db *database.DB, argv []string) {
+func Add(db *database.DB, argv []string) {
 	args := parse(subUsage["add"], argv, false)
 	switch {
 	case args["subnet"].(bool):
 		name := args["<name>"].(string)
 		cidr := cidr(args["<cidr>"].(string))
 		attrs := attrs(args["<key>"].([]string), args["<value>"].([]string))
-		if err := db.AddAllocation(name, cidr, attrs); err != nil {
+		if err := db.AddSubnet(name, cidr, attrs); err != nil {
 			fatal("Error creating subnet: %s", err)
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Added subnet %s\n", cidr)
 	case args["host"].(bool):
 		name := args["<name>"].(string)
@@ -213,21 +213,21 @@ func Add(dbPath string, db *database.DB, argv []string) {
 		if err := db.AddHost(name, []net.IP{addr}, attrs); err != nil {
 			fatal("Error creating host: %s", err)
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Added host %s\n", name)
 	case args["address"].(bool):
 		hostAddr := addr(args["<addr>"].(string))
-		host := db.FindHost(hostAddr)
+		host := db.Host(hostAddr)
 		if host == nil {
 			fatal("Host with IP address %s not found in database", hostAddr)
 		}
 		for _, a := range args["<addrs>"].([]string) {
 			addr := addr(a)
-			if err := db.AddHostAddr(host, addr); err != nil {
+			if err := host.AddAddress(addr); err != nil {
 				fatal("Error adding address %s: %s", addr, err)
 			}
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Added address %s to host %s\n", hostAddr, host.Name)
 	case args["domain"].(bool):
 		name := args["<name>"].(string)
@@ -259,7 +259,7 @@ func Add(dbPath string, db *database.DB, argv []string) {
 		if err := db.AddDomain(name, ns, email, refresh, retry, expiry, nxttl); err != nil {
 			fatal("Error adding domain: %s", err)
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Added domain %s\n", name)
 	case args["ns"].(bool):
 		name := args["<domain>"].(string)
@@ -278,7 +278,7 @@ func Add(dbPath string, db *database.DB, argv []string) {
 				domain.NS = append(domain.NS, ns)
 			}
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Added nameservers to domain %s\n", name)
 	case args["rr"].(bool):
 		name := args["<domain>"].(string)
@@ -297,61 +297,56 @@ func Add(dbPath string, db *database.DB, argv []string) {
 				domain.RR = append(domain.RR, rr)
 			}
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Added RRs to domain %s\n", name)
 	default:
 		panic("unreachable")
 	}
 }
 
-func Rm(dbPath string, db *database.DB, argv []string) {
+func Rm(db *database.DB, argv []string) {
 	args := parse(subUsage["rm"], argv, false)
 	switch {
 	case args["subnet"].(bool):
 		cidr := cidr(args["<cidr>"].(string))
-		alloc := db.FindAllocation(cidr, true)
-		if alloc == nil {
+		subnet := db.Subnet(cidr, true)
+		if subnet == nil {
 			fatal("Subnet %s not found in database", cidr)
 		}
-		if err := db.RemoveAllocation(alloc, !args["--recursive"].(bool)); err != nil {
-			fatal("Error removing subnet: %s", err)
-		}
-		saveDB(dbPath, db)
+		subnet.Delete(!args["--recursive"].(bool))
+		saveDB(db)
 		fmt.Printf("Deleted subnet %s\n", cidr)
 	case args["host"].(bool):
 		addr := addr(args["<addr>"].(string))
-		host := db.FindHost(addr)
+		host := db.Host(addr)
 		if host == nil {
 			fatal("Host with IP address %s not found in database", addr)
 		}
-		if err := db.RemoveHost(host); err != nil {
-			fatal("Error removing host: %s", err)
-		}
-		saveDB(dbPath, db)
+		host.Delete()
+		saveDB(db)
 		fmt.Printf("Deleted host %s\n", host.Name)
 	case args["address"].(bool):
 		hostAddr := addr(args["<addr>"].(string))
-		host := db.FindHost(hostAddr)
+		host := db.Host(hostAddr)
 		if host == nil {
 			fatal("Host with IP address %s not found in database", hostAddr)
 		}
 		for _, a := range args["<addrs>"].([]string) {
 			addr := addr(a)
-			if err := db.RmHostAddr(host, addr); err != nil {
+			if err := host.RemoveAddress(addr); err != nil {
 				fatal("Error removing address %s: %s", addr, err)
 			}
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Removed address %s from host %s\n", hostAddr, host.Name)
 	case args["domain"].(bool):
 		name := args["<domain>"].(string)
-		if _, ok := db.Domains[name]; !ok {
+		domain := db.Domain(name)
+		if domain == nil {
 			fatal("Domain %s does not exist in database", name)
 		}
-		if err := db.RmDomain(name); err != nil {
-			fatal("Error deleting domain: %s", err)
-		}
-		saveDB(dbPath, db)
+		domain.Delete()
+		saveDB(db)
 		fmt.Printf("Removed domain %s\n", name)
 	case args["ns"].(bool):
 		name := args["<domain>"].(string)
@@ -376,7 +371,7 @@ func Rm(dbPath string, db *database.DB, argv []string) {
 			newNS = append(newNS, ns)
 		}
 		domain.NS = newNS
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Removed nameservers from domain %s\n", name)
 	case args["rr"].(bool):
 		name := args["<domain>"].(string)
@@ -402,97 +397,97 @@ func Rm(dbPath string, db *database.DB, argv []string) {
 		}
 		domain.RR = newRR
 
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Removed RRs to domain %s\n", name)
 	default:
 		panic("unreachable")
 	}
 }
 
-func SetAttr(dbPath string, db *database.DB, argv []string) {
+func SetAttr(db *database.DB, argv []string) {
 	args := parse(subUsage["setattr"], argv, false)
 	attrs := attrs(args["<key>"].([]string), args["<value>"].([]string))
 	selector := args["<cidr>"].(string)
 	_, cidr, err := net.ParseCIDR(selector)
 	if err == nil {
-		alloc := db.FindAllocation(&database.IPNet{cidr}, true)
-		if alloc == nil {
+		subnet := db.Subnet(cidr, true)
+		if subnet == nil {
 			fatal("Subnet %s not found in database", cidr)
 		}
 		for k, v := range attrs {
-			alloc.Attrs[k] = v
+			subnet.Attrs[k] = v
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Edited subnet %s.\n", cidr)
 	} else if ip := net.ParseIP(selector); ip != nil {
-		host := db.FindHost(ip)
+		host := db.Host(ip)
 		if host == nil {
 			fatal("Host with IP address %s not found in database", ip)
 		}
 		for k, v := range attrs {
 			host.Attrs[k] = v
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Edited host %s.\n", host.Name)
 	} else {
 		fatal("Invalid selector %s, must be an IP address or a CIDR prefix", selector)
 	}
 }
 
-func RmAttr(dbPath string, db *database.DB, argv []string) {
+func RmAttr(db *database.DB, argv []string) {
 	args := parse(subUsage["rmattr"], argv, false)
 	keys := args["<key>"].([]string)
 	selector := args["<cidr>"].(string)
 	_, cidr, err := net.ParseCIDR(selector)
 	if err == nil {
-		alloc := db.FindAllocation(&database.IPNet{cidr}, true)
-		if alloc == nil {
+		subnet := db.Subnet(cidr, true)
+		if subnet == nil {
 			fatal("Subnet %s not found in database", cidr)
 		}
 		for _, k := range keys {
-			delete(alloc.Attrs, k)
+			delete(subnet.Attrs, k)
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Edited subnet %s.\n", cidr)
 	} else if ip := net.ParseIP(selector); ip != nil {
-		host := db.FindHost(ip)
+		host := db.Host(ip)
 		if host == nil {
 			fatal("Host with IP address %s not found in database", ip)
 		}
 		for _, k := range keys {
 			delete(host.Attrs, k)
 		}
-		saveDB(dbPath, db)
+		saveDB(db)
 		fmt.Printf("Edited host %s.\n", host.Name)
 	} else {
 		fatal("Invalid selector %s, must be an IP address or a CIDR prefix", selector)
 	}
 }
 
-func Export(dbPath string, db *database.DB, argv []string) {
+func Export(db *database.DB, argv []string) {
 	args := parse(subUsage["export"], argv, false)
 	switch {
 	case args["bind9"].(bool):
 		name := args["<domain>"].(string)
-		zone, err := bind9.ExportZone(db, name)
+		zone, err := bind9.ExportZone(db, name, args["--force"].(bool))
 		if err != nil {
 			fatal("Export error: %s", err)
 		}
 		fmt.Println(zone)
-		saveDB(dbPath, db)
+		saveDB(db)
 	default:
 		panic("unreachable")
 	}
 }
 
-func Server(dbPath string, db *database.DB, argv []string) {
+func Server(db *database.DB, argv []string) {
 	args := parse(subUsage["server"], argv, false)
 	var host string
 	if h, ok := args["--addr"].(string); ok {
 		host = h
 	}
 	port := args["<port>"].(string)
-	runServer(fmt.Sprintf("%s:%s", host, port), dbPath, db)
+	runServer(fmt.Sprintf("%s:%s", host, port), db)
 }
 
 func fatal(s string, args ...interface{}) {
@@ -516,16 +511,22 @@ func getDB(dbPath string) *database.DB {
 	return db
 }
 
-func saveDB(dbPath string, db *database.DB) {
-	if err := db.Save(dbPath); err != nil {
+func saveDB(db *database.DB) {
+	if err := db.Save(); err != nil {
 		fatal("Error while saving DB, change not committed: %s", err)
 	}
 }
 
-func allocsAsTree(allocs []*database.Allocation, indent string) {
-	for _, a := range allocs {
-		fmt.Printf("%s%s (%s)\n", indent, a.Net, a.Name)
-		allocsAsTree(a.Children, indent+"  ")
+func subnetsAsTree(subnets map[string]*database.Subnet, indent string) {
+	var sortedSubnets []string
+	for k := range subnets {
+		sortedSubnets = append(sortedSubnets, k)
+	}
+	sort.Strings(sortedSubnets)
+
+	for _, s := range sortedSubnets {
+		fmt.Printf("%s%s (%s)\n", indent, s, subnets[s].Name)
+		subnetsAsTree(subnets[s].Subnets, indent+"  ")
 	}
 }
 
@@ -537,12 +538,12 @@ func addr(s string) net.IP {
 	return ip
 }
 
-func cidr(s string) *database.IPNet {
+func cidr(s string) *net.IPNet {
 	_, net, err := net.ParseCIDR(s)
 	if err != nil {
 		fatal("Invalid CIDR prefix %s", s)
 	}
-	return &database.IPNet{net}
+	return net
 }
 
 func duration(s string) time.Duration {

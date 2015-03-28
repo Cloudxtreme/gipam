@@ -4,34 +4,137 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/aryann/difflib"
 )
 
-func cidr(in string) *IPNet {
+func cidr(in string) *net.IPNet {
 	_, net, err := net.ParseCIDR(in)
 	if err != nil {
 		panic(err)
 	}
-	return &IPNet{net}
+	return net
 }
 
-func mkTextTree(allocs []*Allocation, indent string) string {
-	var ret string
-	for _, a := range allocs {
-		ret += fmt.Sprintf("%s%s\n", indent, a.Net)
-		ret += mkTextTree(a.Children, indent+"  ")
+func deleteNet(db *DB, net *net.IPNet) error {
+	subnet := db.Subnet(net, true)
+	if subnet == nil {
+		return fmt.Errorf("Expected subnet for %s not in DB", net)
+	}
+	subnet.Delete(false)
+	return nil
+}
+
+func asJSON(db *DB) string {
+	ret, err := db.Bytes()
+	if err != nil {
+		panic(err)
+	}
+	return string(ret)
+}
+
+func fromJSON(raw string) *DB {
+	ret, err := LoadBytes([]byte(raw))
+	if err != nil {
+		panic(err)
 	}
 	return ret
 }
 
-func deleteNet(db *DB, net *IPNet) error {
-	alloc := db.FindAllocation(net, true)
-	if alloc == nil {
-		return fmt.Errorf("Expected alloc for %s not in DB", net)
+func DBDiff(a, b *DB) string {
+	if reflect.DeepEqual(a, b) {
+		return ""
 	}
-	return db.RemoveAllocation(alloc, true)
+	var ret string
+	for _, record := range difflib.Diff(strings.Split(asJSON(a), "\n"), strings.Split(asJSON(b), "\n")) {
+		ret += record.String() + "\n"
+	}
+	return ret
 }
 
+func TestBasicAllocation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		action   func(*DB) error
+		expected string
+	}{
+		// Add a subnet
+		{
+			func(d *DB) error {
+				_, err := d.AddSubnet("foo", cidr("192.168.144.0/22"), nil)
+				return err
+			},
+			`{
+  "Subnets": {
+    "192.168.144.0/22": {
+      "Net": "192.168.144.0/22",
+      "Name": "foo"
+    }
+  }
+}`,
+		},
+
+		// Add a child subnet
+		{
+			func(d *DB) error {
+				_, err := d.AddSubnet("bar", cidr("192.168.144.16/29"), nil)
+				return err
+			},
+			`{
+  "Subnets": {
+    "192.168.144.0/22": {
+      "Net": "192.168.144.0/22",
+      "Name": "foo",
+      "Subnets": {
+        "192.168.144.16/29": {
+          "Net": "192.168.144.16/29",
+          "Name": "bar"
+        }
+      }
+    }
+  }
+}`,
+		},
+
+		// Non-recursively delete the parent subnet
+		{
+			func(d *DB) error {
+				subnet := d.Subnet(cidr("192.168.144.0/22"), false)
+				if subnet == nil {
+					return fmt.Errorf("Subnet not found in DB")
+				}
+				subnet.Delete(false)
+				return nil
+			},
+			`{
+  "Subnets": {
+    "192.168.144.16/29": {
+      "Name": "bar",
+      "Net": "192.168.144.16/29"
+    }
+  }
+}`,
+		},
+	}
+
+	db := New()
+	for _, test := range tests {
+		if err := test.action(db); err != nil {
+			t.Fatalf("Error performing action: %s\nexpected state after action:\n%s", err, test.expected)
+		}
+		if d := DBDiff(fromJSON(test.expected), db); d != "" {
+			t.Errorf("DB state differs from expected:\n%s", d)
+			t.Errorf("If no diff is visible, it means internal structures don't match.")
+			t.FailNow()
+		}
+	}
+}
+
+// Stress test of the subnetting and reparenting logic.
 func TestAllocateDeallocate(t *testing.T) {
 	t.Parallel()
 	ranges := []string{
@@ -52,11 +155,12 @@ func TestAllocateDeallocate(t *testing.T) {
 		"192.168.144.240/28",
 	}
 
-	for it := 0; it < 1000; it++ {
-		// Golden DB is the above order
-		golden := New("")
+	for it := 0; it < 100; it++ {
+		// We mutate golden during the deletion testing, so recreate
+		// it each time.
+		golden := New()
 		for _, r := range ranges {
-			if err := golden.AddAllocation(cidr(r).String(), cidr(r), nil); err != nil {
+			if _, err := golden.AddSubnet(r, cidr(r), nil); err != nil {
 				t.Fatalf("Adding %s to golden DB failed: %s", r, err)
 			}
 		}
@@ -64,20 +168,24 @@ func TestAllocateDeallocate(t *testing.T) {
 		// Build a new DB with a randomized order
 		order := rand.Perm(len(ranges))
 		var rangesInOrder []string
-		db := New("")
+		db := New()
 		for _, i := range order {
 			rangesInOrder = append(rangesInOrder, ranges[i])
 			r := cidr(ranges[i])
-			if err := db.AddAllocation(r.String(), r, nil); err != nil {
+			if _, err := db.AddSubnet(r.String(), r, nil); err != nil {
 				t.Fatalf("Adding %s to DB failed: %s", r, err)
 			}
 		}
 
-		// The DB walk should be equivalent at this point.
-		a, b := mkTextTree(db.Allocs, "  "), mkTextTree(golden.Allocs, "  ")
-		if a != b {
-			t.Errorf("DB differs from golden when constructed in order: %#v", rangesInOrder)
-			t.Fatalf("got:\n%swant:\n%s", a, b)
+		if err := db.validate(); err != nil {
+			t.Fatalf("Internal validation failure: %s", err)
+		}
+
+		if d := DBDiff(golden, db); d != "" {
+			t.Errorf("DB state differs after addition sequence %#v", rangesInOrder)
+			t.Errorf("%s", d)
+			t.Errorf("If no diff is visible, it means internal structures don't match.")
+			t.FailNow()
 		}
 
 		// Now delete in a random order, pulling from golden and db in
@@ -88,198 +196,117 @@ func TestAllocateDeallocate(t *testing.T) {
 			rangesInOrder = append(rangesInOrder, ranges[i])
 			if err := deleteNet(golden, cidr(ranges[i])); err != nil {
 				t.Errorf("Deleting %s from golden: %s", ranges[i], err)
-				t.Errorf("Delete sequence:%#v", rangesInOrder)
-				t.Errorf("Golden DB:\n%s", mkTextTree(golden.Allocs, "  "))
+				t.Errorf("Delete sequence: %#v", rangesInOrder)
+				t.Errorf("Golden DB:\n%s", asJSON(golden))
 				t.FailNow()
 			}
 			if err := deleteNet(db, cidr(ranges[i])); err != nil {
 				t.Errorf("Deleting %s from db: %s", ranges[i], err)
-				t.Errorf("Delete sequence:%#v", rangesInOrder)
-				t.Errorf("DB:\n%s", mkTextTree(db.Allocs, "  "))
+				t.Errorf("Delete sequence: %#v", rangesInOrder)
+				t.Errorf("DB:\n%s", asJSON(db))
 				t.FailNow()
 			}
+			if err := db.validate(); err != nil {
+				t.Fatalf("Internal validation failure: %s", err)
+			}
 
-			c, d := mkTextTree(db.Allocs, "  "), mkTextTree(golden.Allocs, "  ")
-			if c != d {
-				t.Errorf("DB differs from golden after deleting %#v", rangesInOrder)
-				t.Fatalf("started with:\n%sdb after deletions:\n%sgolden after deletions:%s", a, b, c)
+			if d := DBDiff(golden, db); d != "" {
+				t.Errorf("DB state differs after deletion sequence %#v", rangesInOrder)
+				t.Errorf("%s", d)
+				t.Errorf("If no diff is visible, it means internal structures don't match.")
+				t.FailNow()
 			}
 		}
 	}
 }
 
-func TestHosts(t *testing.T) {
+// This is used in the various tests that just need a reasonable
+// network to play with.
+const sampleNet = `{
+  "Subnets": {
+    "192.168.1.0/24": {
+      "Name": "muz",
+      "Net": "192.168.1.0/24",
+      "Subnets": {
+        "192.168.1.128/25": {
+          "Name": "darf",
+          "Net": "192.168.1.128/25"
+        }
+      }
+    },
+    "192.168.144.0/22": {
+      "Name": "foo",
+      "Net": "192.168.144.0/22",
+      "Subnets": {
+        "192.168.144.0/28": {
+          "Name": "bar",
+          "Net": "192.168.144.0/28",
+          "Subnets": {
+            "192.168.144.2/31": {
+              "Name": "qux",
+              "Net": "192.168.144.2/31"
+            }
+          }
+        },
+        "192.168.144.16/29": {
+          "Name": "baz",
+          "Net": "192.168.144.16/29"
+        }
+      }
+    }
+  }
+}`
+
+func TestHostsAddRm(t *testing.T) {
 	t.Parallel()
-	ranges := []string{
-		"192.168.144.0/22",
-		"192.168.144.0/26",
-		"192.168.144.0/28",
-		"192.168.144.16/29",
-		"192.168.144.32/28",
-		"192.168.144.56/29",
-		"192.168.144.64/31",
-		"192.168.144.66/31",
-		"192.168.144.68/31",
-		"192.168.144.64/27",
-		"192.168.144.70/31",
-		"192.168.144.72/31",
-		"192.168.144.128/25",
-		"192.168.144.128/27",
-		"192.168.144.240/28",
-	}
-	db := New("")
-	for _, r := range ranges {
-		if err := db.AddAllocation(r, cidr(r), nil); err != nil {
-			t.Fatalf("Adding %s to DB: %s", r, err)
-		}
+	db := fromJSON(sampleNet)
+	ip := net.ParseIP("192.168.144.1")
+
+	h, err := db.AddHost("router", []net.IP{ip}, nil)
+	if err != nil {
+		t.Fatalf("Adding host failed: %s", err)
 	}
 
-	type hostToAllocs struct {
-		host, alloc string
-	}
-	tests := []hostToAllocs{
-		{"192.168.144.1", "192.168.144.0/28"},
-		{"192.168.144.241", "192.168.144.240/28"},
-		{"192.168.144.242", "192.168.144.240/28"},
-		{"192.168.145.5", "192.168.144.0/22"},
-		{"192.168.0.1", ""},
-	}
-	for _, tc := range tests {
-		if err := db.AddHost(tc.host, []net.IP{net.ParseIP(tc.host)}, nil); err != nil {
-			t.Fatalf("Adding %s to DB: %s", tc.host, err)
-		}
+	h2 := db.Host(ip)
+	if h != h2 {
+		t.Fatalf("Couldn't find host I just added to the DB")
 	}
 
-	for _, tc := range tests {
-		h := db.FindHost(net.ParseIP(tc.host))
-		if h == nil {
-			t.Fatalf("%s added to DB, but not found", h)
-		}
-		if len(h.Addrs) != 1 || !h.Addrs[0].Equal(net.ParseIP(tc.host)) {
-			t.Fatalf("Host %s is missing its address", tc.host)
-		}
-
-		a := h.parents[tc.host]
-		if tc.alloc == "" {
-			if a != nil {
-				t.Fatalf("Host %s should not be in an alloc, but is in alloc %s", tc.host, a.Net.String())
-			}
-		} else {
-			if a.Net.String() != tc.alloc {
-				t.Fatalf("Host %s should be in alloc %s, but is actually in %s", tc.host, tc.alloc, a.Net.String())
-			}
-
-			if a.hosts[tc.host] != h {
-				t.Fatalf("Alloc %s doesn't have a host pointer to %s", a.Net, tc.host)
-			}
-		}
-	}
-
-	tests = []hostToAllocs{
-		{"192.168.144.1", "192.168.144.0/26"},
-		{"192.168.144.241", "192.168.144.128/25"},
-		{"192.168.145.5", ""},
-	}
-	for _, tc := range tests {
-		h := db.FindHost(net.ParseIP(tc.host))
-		if err := db.RemoveAllocation(h.parents[tc.host], true); err != nil {
-			t.Fatalf("Couldn't delete alloc %s, parent of host %s", h.parents[tc.host].Net, tc.host)
-		}
-
-		if tc.alloc == "" {
-			if a := h.parents[tc.host]; a != nil {
-				t.Fatalf("IP %s should not have a parent, but is parented to %s", tc.host, a.Net.String())
-			}
-		} else {
-			if h.parents[tc.host].Net.String() != tc.alloc {
-				t.Fatalf("Host %s should have reparented to %s, but points to %s", tc.host, tc.alloc, h.parents[tc.host].Net)
-			}
-		}
-	}
-
-	tests = []hostToAllocs{
-		{"192.168.144.1", "192.168.144.0/28"},
-		{"192.168.144.241", "192.168.144.240/28"},
-		{"192.168.145.5", "192.168.144.0/22"},
-	}
-
-	for _, tc := range tests {
-		if err := db.AddAllocation(tc.alloc, cidr(tc.alloc), nil); err != nil {
-			t.Fatalf("Couldn't readd alloc %s: %s", tc.alloc, err)
-		}
-		h := db.FindHost(net.ParseIP(tc.host))
-		a := h.parents[tc.host]
-		if a == nil {
-			t.Fatalf("Host %s should have reparented to %s, but has no parent", tc.host, tc.alloc)
-		} else if a.Net.String() != tc.alloc {
-			t.Fatalf("Host %s should have reparented to %s, but points to %s", tc.host, tc.alloc, h.parents[tc.host].Net)
-		}
-	}
-
-	for _, h := range db.Hosts {
-		if err := db.RemoveHost(h); err != nil {
-			t.Fatalf("Error deleting host %s: %s", h.Name, err)
-		}
+	h.Delete()
+	if h2 = db.Host(ip); h2 != nil {
+		t.Fatalf("Deleted host %s, but it's still in the DB", ip)
 	}
 }
 
-func TestHostAddrs(t *testing.T) {
+func TestHostMultiAddr(t *testing.T) {
 	t.Parallel()
-	ranges := []string{
-		"192.168.144.0/22",
-		"192.168.144.0/26",
+	db := fromJSON(sampleNet)
+	ip1 := net.ParseIP("192.168.144.1")
+	ip2 := net.ParseIP("192.168.1.1")
+
+	h, err := db.AddHost("router", []net.IP{ip1, ip2}, nil)
+	if err != nil {
+		t.Fatalf("Adding host failed: %s", err)
 	}
-	db := New("")
-	for _, r := range ranges {
-		if err := db.AddAllocation(r, cidr(r), nil); err != nil {
-			t.Fatalf("Adding %s to DB: %s", r, err)
-		}
+	if h == nil {
+		t.Fatalf("AddHost returned nil host w/out error")
 	}
 
-	tests := [][]string{
-		{"192.168.144.1", "fde5:f2ff:2a11:343::1", "42.2.2.1"},
-		{"192.168.1.1", "fde5:f2fd:2a11:343::42", "192.168.145.1"},
+	h2 := db.Host(ip1)
+	if h != h2 {
+		t.Fatalf("Couldn't find host %s", ip1)
+	}
+	h2 = db.Host(ip2)
+	if h != h2 {
+		t.Fatalf("Couldn't find host %s", ip2)
 	}
 
-	for _, tc := range tests {
-		if err := db.AddHost("foo", []net.IP{net.ParseIP(tc[0])}, nil); err != nil {
-			t.Fatalf("Adding %s to DB: %s", tc[0], err)
-		}
-		h := db.FindHost(net.ParseIP(tc[0]))
-		if h == nil {
-			t.Fatalf("Host %s added to DB but not found", tc[0])
-		}
-		for _, o := range tc[1:] {
-			if err := db.AddHostAddr(h, net.ParseIP(o)); err != nil {
-				t.Fatalf("Adding %s to host %s: %s", o, tc[0], err)
-			}
-		}
-		for _, a := range tc {
-			h2 := db.FindHost(net.ParseIP(a))
-			if h != h2 {
-				t.Fatalf("Address %s should belong to host %#v, but belongs to %#v", a, h, h2)
-			}
-		}
+	h.Delete()
+	if h = db.Host(ip1); h != nil {
+		t.Fatalf("Deleted host %s, but it's still in the DB", ip1)
 	}
-}
-
-func TestLastAddr(t *testing.T) {
-	t.Parallel()
-	type table struct {
-		in, out string
-	}
-	tests := []table{
-		{"192.168.208.0/22", "192.168.211.255"},
-		{"192.168.210.42/24", "192.168.210.255"},
-		{"192.168.210.42/32", "192.168.210.42"},
-	}
-
-	for _, test := range tests {
-		net := cidr(test.in)
-		actual := net.LastAddr().String()
-		if actual != test.out {
-			t.Errorf("Last address of %s should be %s, got %s", test.in, test.out, actual)
-		}
+	if h = db.Host(ip2); h != nil {
+		t.Fatalf("Deleted host %s, but it's still in the DB", ip2)
 	}
 }
 
@@ -298,11 +325,47 @@ func TestNetContains(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		n1 := cidr(test.n1)
-		n2 := cidr(test.n2)
-		res := n1.ContainsNet(n2)
+		n1 := (*IPNet)(cidr(test.n1))
+		n2 := (*IPNet)(cidr(test.n2))
+		res := n1.ContainsIPNet(n2)
 		if res != test.outcome {
-			t.Errorf("netContains(%#v, %#v) = %v, want %v", test.n1, test.n2, res, test.outcome)
+			t.Errorf("ContainsIPNet(%#v, %#v) = %v, want %v", test.n1, test.n2, res, test.outcome)
 		}
+	}
+}
+
+func TestZoneSerial(t *testing.T) {
+	t.Parallel()
+	var zs ZoneSerial
+	if zs.String() != "0001010100" {
+		t.Fatalf("Bad zero ZoneSerial %s", zs)
+	}
+
+	var zs2 ZoneSerial
+	zs2.Inc()
+	if !zs.Before(zs2) {
+		t.Fatalf("Time-travelling zone serial: %s < %s", zs2, zs)
+	}
+
+	if err := zs.UnmarshalJSON([]byte("\"2012030699\"")); err != nil {
+		t.Fatalf("Unmarshalling valid ZoneSerial: %s", err)
+	}
+
+	if !zs.Before(zs2) {
+		t.Fatalf("Time-travelling zone serial: %s < %s", zs2, zs)
+	}
+	if zs.date.Year() != 2012 || zs.date.Month() != 3 || zs.date.Day() != 6 {
+		t.Fatalf("Unmarshalled ZoneSerial %s has wrong date, should be 20120306", zs)
+	}
+	if zs.inc != 99 {
+		t.Fatalf("Unmarshalled ZoneSerial %s has wrong increment, should be 99", zs)
+	}
+
+	b, err := zs.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Marshalling ZoneSerial %s: %s", zs, err)
+	}
+	if string(b) != "\"2012030699\"" {
+		t.Fatalf("Marshaled ZoneSerial %s is wrong, should be \"2012030699\"", zs)
 	}
 }
