@@ -424,7 +424,10 @@ func (h *Host) Parent(ip net.IP) *Subnet {
 	if isv4(ip) {
 		maskLen = 32
 	}
-	return h.db.Subnet(&net.IPNet{ip, net.CIDRMask(maskLen, maskLen)}, false)
+	return h.db.Subnet(&net.IPNet{
+		IP:   ip,
+		Mask: net.CIDRMask(maskLen, maskLen),
+	}, false)
 }
 
 // Domain records the metadata about a DNS domain.
