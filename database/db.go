@@ -11,8 +11,11 @@ import (
 	"time"
 )
 
+// DB is a subnet, host and domain name database.
 type DB struct {
-	Path    string             `json:"-"`
+	Path string `json:"-"`
+
+	// Treat the following as read-only fields.
 	Subnets map[string]*Subnet `json:",omitempty"` // cidr->subnet
 	Hosts   []*Host            `json:",omitempty"`
 	Domains map[string]*Domain `json:",omitempty"`
@@ -20,6 +23,7 @@ type DB struct {
 	ipToHost map[string]*Host
 }
 
+// New returns an empty DB.
 func New() *DB {
 	return &DB{
 		Subnets:  make(map[string]*Subnet),
@@ -28,6 +32,7 @@ func New() *DB {
 	}
 }
 
+// Load reads a DB from a file.
 func Load(path string) (*DB, error) {
 	f, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -41,6 +46,7 @@ func Load(path string) (*DB, error) {
 	return db, nil
 }
 
+// LoadBytes reads a DB in the form returned by Bytes().
 func LoadBytes(raw []byte) (*DB, error) {
 	ret := New()
 	if err := json.Unmarshal(raw, &ret); err != nil {
@@ -87,6 +93,7 @@ func recLinkSubnets(db *DB, subnets map[string]*Subnet, parent *Subnet) {
 	}
 }
 
+// Save writes the DB to db.Path.
 func (db *DB) Save() error {
 	if db.Path == "" {
 		return errors.New("No database path defined")
@@ -98,6 +105,7 @@ func (db *DB) Save() error {
 	return ioutil.WriteFile(db.Path, f, 0640)
 }
 
+// Bytes serializes the DB to raw bytes, loadable by LoadBytes.
 func (db *DB) Bytes() ([]byte, error) {
 	if err := db.validate(); err != nil {
 		return nil, err
@@ -154,6 +162,9 @@ func recValidateSubnets(db *DB, subnets map[string]*Subnet, parent *Subnet) erro
 
 // Lookup funcs
 
+// Subnet returns the allocated Subnet matching the given net, or nil
+// if none exists. If exact is false, the search is widened to the
+// smallest Subnet that wholly contains net.
 func (db *DB) Subnet(net *net.IPNet, exact bool) *Subnet {
 	n := (*IPNet)(net)
 	for _, subnet := range db.Subnets {
@@ -167,6 +178,8 @@ func (db *DB) Subnet(net *net.IPNet, exact bool) *Subnet {
 	return nil
 }
 
+// Host returns the Host that owns the given IP address, or nil if no
+// such host exists.
 func (db *DB) Host(ip net.IP) *Host {
 	if h, ok := db.ipToHost[ip.String()]; ok {
 		return h
@@ -174,6 +187,8 @@ func (db *DB) Host(ip net.IP) *Host {
 	return nil
 }
 
+// Domain returns the Domain matching the given name, or nil if no
+// such domain exists.
 func (db *DB) Domain(name string) *Domain {
 	if dom, ok := db.Domains[name]; ok {
 		return dom
@@ -183,6 +198,10 @@ func (db *DB) Domain(name string) *Domain {
 
 // Adders
 
+// AddSubnet allocates a new Subnet with the given settings.
+//
+// The net must contain at least 2 addresses (i.e. /31 for IPv4, /127
+// for IPv6).
 func (db *DB) AddSubnet(name string, net *net.IPNet, attrs map[string]string) error {
 	if o, b := net.Mask.Size(); o == b {
 		return fmt.Errorf("Cannot allocate %s as a subnet, because it's a host address", net)
@@ -216,6 +235,10 @@ func (db *DB) AddSubnet(name string, net *net.IPNet, attrs map[string]string) er
 	return nil
 }
 
+// AddHost allocates a new Host with the given settings.
+//
+// Host IPs are globally unique within the DB, no duplicates are
+// permitted.
 func (db *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) error {
 	for _, addr := range addrs {
 		if h, ok := db.ipToHost[addr.String()]; ok {
@@ -238,6 +261,12 @@ func (db *DB) AddHost(name string, addrs []net.IP, attrs map[string]string) erro
 	return nil
 }
 
+// AddDomain allocates a new Domain with the given settings.
+//
+// For a normal (forward lookup) zone, all attributes except for the
+// name are optional, and will default to reasonable values. For an
+// ARPA zone (reverse lookup), name, ns and email must all be provided
+// because no reasonable defaults exist.
 func (db *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl time.Duration) error {
 	// TODO: canonicalize domain name, here we're trusting the user to
 	// input the right thing.
@@ -292,11 +321,12 @@ func (db *DB) AddDomain(name, ns, email string, refresh, retry, expiry, nxttl ti
 
 // Major datatypes
 
+// Subnet represents one CIDR block.
 type Subnet struct {
 	Name  string            `json:",omitempty"`
 	Attrs map[string]string `json:",omitempty"`
 
-	// Consider these read-only.
+	// Treat the following as read-only fields.
 	Net     *IPNet
 	Subnets map[string]*Subnet `json:",omitempty"` // cidr->Subnet
 	Parent  *Subnet            `json:"-"`
@@ -304,6 +334,8 @@ type Subnet struct {
 	db *DB
 }
 
+// Delete removes the subnet from the database. If recursive is true,
+// children are also deleted instead of being reparented.
 func (s *Subnet) Delete(recursive bool) {
 	m := s.db.Subnets
 	if s.Parent != nil {
@@ -333,6 +365,7 @@ func (s *Subnet) findSubnet(n *IPNet) *Subnet {
 	return s
 }
 
+// Host represents a network host.
 type Host struct {
 	Addrs HostAddrs
 	Name  string            `json:",omitempty"`
@@ -341,6 +374,7 @@ type Host struct {
 	db *DB
 }
 
+// Delete removes the host from the database.
 func (h *Host) Delete() {
 	for _, addr := range h.Addrs {
 		delete(h.db.ipToHost, addr.String())
@@ -354,6 +388,10 @@ func (h *Host) Delete() {
 	h.db.Hosts = newHosts
 }
 
+// AddAddress assigns a new address to the host.
+//
+// Just like with DB.AddHost, host addresses are glboally unique in
+// the DB, no duplication is allowed.
 func (h *Host) AddAddress(addr net.IP) error {
 	if h, ok := h.db.ipToHost[addr.String()]; ok {
 		return fmt.Errorf("address %s already allocated to %s", addr, h.Name)
@@ -363,6 +401,7 @@ func (h *Host) AddAddress(addr net.IP) error {
 	return nil
 }
 
+// RemoveAddress removes an address from the host.
 func (h *Host) RemoveAddress(addr net.IP) error {
 	if _, ok := h.Addrs[addr.String()]; !ok {
 		return fmt.Errorf("address %s does not belong to %s", addr, h)
@@ -372,6 +411,10 @@ func (h *Host) RemoveAddress(addr net.IP) error {
 	return nil
 }
 
+// Parent returns the Subnet containing the given host address.
+//
+// Returns nil if ip does not belong to the host, or the IP is not
+// contained by any allocated subnet.
 func (h *Host) Parent(ip net.IP) *Subnet {
 	if _, ok := h.Addrs[ip.String()]; !ok {
 		return nil
@@ -384,6 +427,10 @@ func (h *Host) Parent(ip net.IP) *Subnet {
 	return h.db.Subnet(&net.IPNet{ip, net.CIDRMask(maskLen, maskLen)}, false)
 }
 
+// Domain records the metadata about a DNS domain.
+//
+// This is the information found in the Start Of Authority (SOA)
+// record for the domain.
 type Domain struct {
 	Name string
 
@@ -404,26 +451,38 @@ type Domain struct {
 	db *DB
 }
 
+// Delete removes the domain from the database.
 func (d *Domain) Delete() {
 	delete(d.db.Domains, d.Name)
 }
 
+// SOA returns the SOA record for the domain, in bind9 zonefile format.
 func (d *Domain) SOA() string {
 	return fmt.Sprintf("@ IN SOA %s. %s. ( %s %d %d %d %d )", d.PrimaryNS, d.Email, d.Serial, int(d.SlaveRefresh.Seconds()), int(d.SlaveRetry.Seconds()), int(d.SlaveExpiry.Seconds()), int(d.NXDomainTTL.Seconds()))
 }
 
 // Misc. types
 
+// IPNet wraps net.IPNet for better JSON marshalling.
 type IPNet net.IPNet
 
+// String returns the CIDR notation of n like "192.168.100.1/24" or
+// "2001:DB8::/48" as defined in RFC 4632 and RFC 4291. If the mask is
+// not in the canonical form, it returns the string which consists of
+// an IP address, followed by a slash character and a mask expressed
+// as hexadecimal form with no punctuation like
+// "192.168.100.1/c000ff00".
 func (n *IPNet) String() string {
 	return (*net.IPNet)(n).String()
 }
 
+// MarshalJSON implements the encoding/json.Marshaller interface. The
+// encoding is the quoted form of String().
 func (n *IPNet) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf("\"%s\"", n)), nil
 }
 
+// UnmarshalJSON implements the encoding/json.Unmarshaller interface.
 func (n *IPNet) UnmarshalJSON(b []byte) error {
 	_, net, err := net.ParseCIDR(string(b[1 : len(b)-1]))
 	if err != nil {
@@ -433,14 +492,18 @@ func (n *IPNet) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// Equal returns true if n and n2 are the same CIDR block.
 func (n *IPNet) Equal(n2 *IPNet) bool {
 	return (*net.IPNet)(n).String() == (*net.IPNet)(n2).String()
 }
 
+// Contains reports whether the network includes ip.
 func (n *IPNet) Contains(ip net.IP) bool {
 	return ip.Mask(n.Mask).Equal(n.IP)
 }
 
+// ContainsIPNet reports whether n contains n2. n.Equal(n2) implies
+// n.ContainsIPNet(n2).
 func (n *IPNet) ContainsIPNet(n2 *IPNet) bool {
 	if isv4(n.IP) != isv4(n2.IP) {
 		return false
@@ -451,8 +514,13 @@ func (n *IPNet) ContainsIPNet(n2 *IPNet) bool {
 	return m2 >= m1 && n.IP.Mask(n.Mask).Equal(n2.IP.Mask(n.Mask))
 }
 
+// HostAddrs is a set of IP addresses, indexed by their String()
+// representation.
 type HostAddrs map[string]net.IP
 
+// MarshalJSON implements the encoding/json.Marhsaller
+// interface. HostAddrs are encoded as sorted list of IP addresses in
+// String() form.
 func (h HostAddrs) MarshalJSON() ([]byte, error) {
 	var sorted []string
 	for k := range h {
@@ -466,6 +534,7 @@ func (h HostAddrs) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// UnmarshalJSON implements the encoding/json.Unmarshaller interface.
 func (h *HostAddrs) UnmarshalJSON(b []byte) error {
 	var in []net.IP
 	if err := json.Unmarshal(b, &in); err != nil {
@@ -478,11 +547,16 @@ func (h *HostAddrs) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// ZoneSerial describes a DNS zone serial number, in the de-facto
+// standard YYYYMMDDxx format, representing a specific day and an
+// incrementing 2-digit counter for same-day zone changes.
 type ZoneSerial struct {
 	date time.Time
 	inc  int
 }
 
+// Inc increments z, following the date-as-zone conventions. For
+// example, 2014042915 might increment to 2014042916 or 2014043001.
 func (z *ZoneSerial) Inc() {
 	now := time.Now().UTC().Truncate(24 * time.Hour)
 	y, m, d := z.date.Date()
@@ -498,6 +572,7 @@ func (z *ZoneSerial) Inc() {
 	}
 }
 
+// Before returns true if z describes an older zone than oz.
 func (z ZoneSerial) Before(oz ZoneSerial) bool {
 	if z.date.Before(oz.date) {
 		return true
@@ -505,14 +580,18 @@ func (z ZoneSerial) Before(oz ZoneSerial) bool {
 	return z.inc < oz.inc
 }
 
+// String returns the zone serial in the YYYYMMDDxx format.
 func (z ZoneSerial) String() string {
 	return fmt.Sprintf("%s%02d", z.date.Format("20060102"), z.inc)
 }
 
+// MarshalJSON implements the encoding/json.Marhaller interface. The
+// encoding is the same as String().
 func (z *ZoneSerial) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf("\"%s\"", z.String())), nil
 }
 
+// UnmarshalJSON implements the encoding/json.Unmarshaller interface.
 func (z *ZoneSerial) UnmarshalJSON(b []byte) error {
 	if string(b) == "\"0\"" {
 		z.date = time.Time{}
