@@ -59,7 +59,5 @@ func dbPrefixBytes(pfx string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ret []byte
-	ret = append(ret, n.IP.To16()...)
-	return append(ret, net.IP(n.Mask).To16()...), nil
+	return n.IP.To16(), nil
 }

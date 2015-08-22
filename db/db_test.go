@@ -1,6 +1,7 @@
 package db
 
 import (
+	"math/rand"
 	"net"
 	"reflect"
 	"testing"
@@ -137,16 +138,33 @@ func TestPrefix(t *testing.T) {
 		}
 	}
 
-	allPrefixes, err := r.GetAllPrefixes()
+	roots, err := r.GetPrefixTree()
 	if err != nil {
-		t.Errorf("Getting all prefixes: %s", err)
+		t.Fatalf("Getting prefix tree: %s", err)
 	}
-	var actual []string
-	for _, pfx := range allPrefixes {
-		actual = append(actual, pfx.Prefix.String())
+
+	type flatTree struct {
+		pfx   string
+		depth int
 	}
-	if !reflect.DeepEqual(actual, prefixes) {
-		t.Errorf("GetAllPrefixes() = %v, got %v", prefixes, actual)
+	expected := []flatTree{
+		{"0.0.0.0/0", 0},
+		{"192.168.0.0/16", 1},
+		{"192.168.0.0/24", 2},
+		{"192.168.1.0/24", 2},
+		{"192.168.2.0/24", 2},
+		{"192.168.2.128/25", 3},
+	}
+	var walkTree func([]*PrefixTree, int) []flatTree
+	walkTree = func(cs []*PrefixTree, depth int) (ret []flatTree) {
+		for _, c := range cs {
+			ret = append(ret, flatTree{c.Prefix.Prefix.String(), depth})
+			ret = append(ret, walkTree(c.Children, depth+1)...)
+		}
+		return ret
+	}
+	if !reflect.DeepEqual(walkTree(roots, 0), expected) {
+		t.Errorf("GetPrefixTree() = %v, got %v", walkTree(roots, 0), expected)
 	}
 
 	for _, prefix := range prefixes {
@@ -272,3 +290,42 @@ func TestMatches(t *testing.T) {
 		}
 	}
 }
+
+func benchPrefixTree(pfxcnt int, b *testing.B) {
+	db, err := New(":memory:")
+	if err != nil {
+		b.Fatal("Cannot create in-memory DB:", err)
+	}
+
+	r := db.Realm("prod")
+	if err = r.Create(); err != nil {
+		b.Fatalf("Creating realm: %s", err)
+	}
+
+	var actualPrefixes int64
+	for _, l := range []int{8, 16, 24, 32} {
+		for n := 0; n < pfxcnt; n++ {
+			ip := make([]byte, 4)
+			for i := 0; i < l/8; i++ {
+				ip[i] = byte(rand.Int())
+			}
+			//fmt.Println(net.IP(ip), net.CIDRMask(l, 32))
+			pfx := &net.IPNet{net.IP(ip), net.CIDRMask(l, 32)}
+			if err := r.Prefix(pfx).Create(); err == nil {
+				actualPrefixes++
+			}
+		}
+		pfxcnt *= 10
+	}
+
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		r.GetPrefixTree()
+	}
+}
+
+func BenchmarkPrefixTree1(b *testing.B) { benchPrefixTree(1, b) }
+
+// func BenchmarkPrefixTree2(b *testing.B)  { benchPrefixTree(2, b) }
+// func BenchmarkPrefixTree5(b *testing.B)  { benchPrefixTree(5, b) }
+// func BenchmarkPrefixTree10(b *testing.B) { benchPrefixTree(10, b) }

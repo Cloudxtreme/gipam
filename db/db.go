@@ -115,35 +115,56 @@ func (r *Realm) Prefix(prefix *net.IPNet) *Prefix {
 	}
 }
 
-func (r *Realm) GetAllPrefixes() ([]*Prefix, error) {
-	q := `SELECT prefix, prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 ORDER BY prefixBytes(prefix)`
+func (r *Realm) GetPrefixTree() (roots []*PrefixTree, err error) {
+	q := `
+SELECT prefix, Children.description, (
+  SELECT prefix
+  FROM prefixes INNER JOIN realms USING (realm_id)
+  WHERE realms.name = $1 AND isSubnetOf(prefix, Children.prefix) AND prefix != Children.prefix
+  ORDER BY prefixlen(prefix) DESC
+  LIMIT 1
+) AS parent
+FROM prefixes AS Children INNER JOIN realms USING (realm_id)
+WHERE realms.name = $1
+ORDER BY prefixlen(prefix), prefixBytes(prefix)`
+
 	rows, err := r.db.db.Query(q, r.Name)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var ret []*Prefix
+	prefixes := map[string]*PrefixTree{}
 	for rows.Next() {
-		var ipnet, desc string
-		if err = rows.Scan(&ipnet, &desc); err != nil {
+		var child, desc string
+		var parent *string
+		if err = rows.Scan(&child, &desc, &parent); err != nil {
 			return nil, err
 		}
-		_, n, err := net.ParseCIDR(ipnet)
+		_, n, err := net.ParseCIDR(child)
 		if err != nil {
 			return nil, err
 		}
-		ret = append(ret, &Prefix{
-			db:          r.db,
-			realm:       r.Name,
-			Prefix:      n,
-			Description: desc,
-		})
+
+		pt := &PrefixTree{
+			Prefix: &Prefix{
+				db:          r.db,
+				realm:       r.Name,
+				Prefix:      n,
+				Description: desc,
+			},
+		}
+		if parent == nil {
+			roots = append(roots, pt)
+		} else {
+			prefixes[*parent].Children = append(prefixes[*parent].Children, pt)
+		}
+		prefixes[child] = pt
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	return ret, nil
+	return roots, nil
 }
 
 // Prefixes
@@ -193,8 +214,8 @@ func (p *Prefix) GetLongestMatch() (*Prefix, error) {
 }
 
 func (p *Prefix) GetMatches() (matches []*Prefix, err error) {
-	q := `SELECT prefix, prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE isSubnetOf(prefix, $1) ORDER BY prefixLen(prefix) DESC`
-	rows, err := p.db.db.Query(q, p.Prefix.String())
+	q := `SELECT prefix, prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 AND isSubnetOf(prefix, $2) ORDER BY prefixLen(prefix) DESC`
+	rows, err := p.db.db.Query(q, p.realm, p.Prefix.String())
 	if err != nil {
 		return nil, err
 	}
@@ -220,4 +241,11 @@ func (p *Prefix) GetMatches() (matches []*Prefix, err error) {
 		return nil, err
 	}
 	return matches, nil
+}
+
+// PrefixTree
+
+type PrefixTree struct {
+	*Prefix
+	Children []*PrefixTree
 }
