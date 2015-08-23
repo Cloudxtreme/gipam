@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   host_id INTEGER PRIMARY KEY,
   realm_id INTEGER REFERENCES realms(realm_id) ON DELETE CASCADE ON UPDATE CASCADE,
   hostname TEXT NOT NULL,
-  description TEXT
+  description TEXT,
+  UNIQUE (realm_id, hostname)
 )`,
 
 	`
@@ -45,17 +46,19 @@ CREATE TABLE IF NOT EXISTS domains (
   name TEXT NOT NULL,
   primary_ns TEXT NOT NULL,
   email TEXT NOT NULL,
-  slave_refresh INTEGER DEFAULT 900,
-  slave_retry INTEGER DEFAULT 900,
-  slave_expiry INTEGER DEFAULT 1814400,
-  nxdomain_ttl INTEGER DEFAULT 600,
-  serial INTEGER DEFAULT 0
+  slave_refresh INTEGER NOT NULL,
+  slave_retry INTEGER NOT NULL,
+  slave_expiry INTEGER NOT NULL,
+  nxdomain_ttl INTEGER NOT NULL,
+  serial TEXT NOT NULL,
+  UNIQUE (realm_id, name)
 )`,
 
 	`
 CREATE TABLE IF NOT EXISTS domain_records (
   record_id INTEGER PRIMARY KEY,
   domain_id INTEGER REFERENCES domains(domain_id) ON DELETE CASCADE ON UPDATE CASCADE,
-  record TEXT NOT NULL
+  record TEXT NOT NULL,
+  UNIQUE (domain_id, record)
 )`,
 }

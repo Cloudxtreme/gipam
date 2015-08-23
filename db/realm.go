@@ -19,6 +19,22 @@ func (r *Realm) Prefix(prefix *net.IPNet) *Prefix {
 	}
 }
 
+func (r *Realm) Domain(name string) *Domain {
+	return &Domain{
+		db:    r.db,
+		realm: r.Name,
+		Name:  name,
+	}
+}
+
+func (r *Realm) Host(hostname string) *Host {
+	return &Host{
+		db:       r.db,
+		realm:    r.Name,
+		Hostname: hostname,
+	}
+}
+
 func (r *Realm) Create() error {
 	q := `INSERT INTO realms (name, description) VALUES ($1, $2)`
 	_, err := r.db.Exec(q, r.Name, r.Description)
@@ -72,6 +88,7 @@ ORDER BY parent_id
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
 	prefixes := map[int64]*PrefixTree{}
 	for rows.Next() {

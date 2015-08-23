@@ -299,6 +299,138 @@ func TestMatches(t *testing.T) {
 	}
 }
 
+func TestDomain(t *testing.T) {
+	t.Parallel()
+	db, err := New(":memory:")
+	//db, err := New("test.db")
+	if err != nil {
+		t.Fatal("Cannot create in-memory DB:", err)
+	}
+
+	r := db.Realm("prod")
+	if err = r.Create(); err != nil {
+		t.Fatalf("Creating realm: %s", err)
+	}
+
+	d := r.Domain("foo.bar")
+	if err = d.Create(); err != nil {
+		t.Fatal(err)
+	}
+
+	d.SOA.Email = "lol"
+	if err = d.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	d2 := r.Domain("foo.bar")
+	if err = d2.Get(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(d, d2) {
+		t.Fatalf("Wrong data returned from get: got %#v, want %#v", d2, d)
+	}
+
+	if err = d2.AddRecord("foo bar"); err != nil {
+		t.Fatal(err)
+	}
+
+	rrs, err := d2.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{"foo bar"}
+	if !reflect.DeepEqual(rrs, expected) {
+		t.Fatalf("Wrong records: got %#v, want %#v", rrs, expected)
+	}
+
+	if err = d2.DeleteRecord("foo bar"); err != nil {
+		t.Fatal(err)
+	}
+
+	rrs, err = d2.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected = nil
+	if !reflect.DeepEqual(rrs, expected) {
+		t.Fatalf("Wrong records: got %#v, want %#v", rrs, expected)
+	}
+
+	if err = d2.Delete(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = d2.Get(); err == nil {
+		t.Fatalf("Managed to get deleted domain %q", d2.Name)
+	}
+}
+
+func TestHost(t *testing.T) {
+	t.Parallel()
+	db, err := New(":memory:")
+	//db, err := New("test.db")
+	if err != nil {
+		t.Fatal("Cannot create in-memory DB:", err)
+	}
+
+	r := db.Realm("prod")
+	if err = r.Create(); err != nil {
+		t.Fatalf("Creating realm: %s", err)
+	}
+
+	h := r.Host("vega")
+	if err = h.Create(); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Description = "lol"
+	if err = h.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	h2 := r.Host("vega")
+	if err = h2.Get(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(h, h2) {
+		t.Fatalf("Wrong data returned from get: got %#v, want %#v", h2, h)
+	}
+
+	if err = h2.AddAddress(net.ParseIP("192.168.0.1")); err != nil {
+		t.Fatal(err)
+	}
+
+	addrs, err := h2.Addresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []net.IP{net.ParseIP("192.168.0.1")}
+	if !reflect.DeepEqual(addrs, expected) {
+		t.Fatalf("Wrong records: got %#v, want %#v", addrs, expected)
+	}
+
+	if err = h2.DeleteAddress(net.ParseIP("192.168.0.1")); err != nil {
+		t.Fatal(err)
+	}
+
+	addrs, err = h2.Addresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected = nil
+	if !reflect.DeepEqual(addrs, expected) {
+		t.Fatalf("Wrong records: got %#v, want %#v", addrs, expected)
+	}
+
+	if err = h2.Delete(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = h2.Get(); err == nil {
+		t.Fatalf("Managed to get deleted host %q", h2.Hostname)
+	}
+}
+
 var roDB *DB
 var roDBOnce sync.Once
 
