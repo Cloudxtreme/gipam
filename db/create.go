@@ -18,36 +18,44 @@ CREATE TABLE IF NOT EXISTS prefixes (
   parent_id INTEGER REFERENCES prefixes(prefix_id) ON DELETE RESTRICT ON UPDATE CASCADE,
   prefix TEXT UNIQUE NOT NULL,
   description TEXT,
-
   UNIQUE (realm_id, prefix)
 )`,
 
-	// 	`CREATE TABLE IF NOT EXISTS hosts (
-	//   id INTEGER PRIMARY KEY,
-	//   realm_id INTEGER REFERENCES realms(id) ON DELETE CASCADE ON UPDATE CASCADE,
-	//   hostname TEXT NOT NULL,
-	//   description TEXT
-	// )`,
-	// 	`CREATE TABLE IF NOT EXISTS host_addrs (
-	//   id INTEGER PRIMARY KEY,
-	//   host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE ON UPDATE CASCADE,
-	//   address BLOB NOT NULL
-	// )`,
-	// 	`CREATE TABLE IF NOT EXISTS domains (
-	//   id INTEGER PRIMARY KEY,
-	//   realm_id INTEGER REFERENCES realms(id) ON DELETE CASCADE ON UPDATE CASCADE,
-	//   name TEXT NOT NULL,
-	//   primary_ns TEXT NOT NULL,
-	//   email TEXT NOT NULL,
-	//   slave_refresh INTEGER DEFAULT 900,
-	//   slave_retry INTEGER DEFAULT 900,
-	//   slave_expiry INTEGER DEFAULT 1814400,
-	//   nxdomain_ttl INTEGER DEFAULT 600,
-	//   serial INTEGER DEFAULT 0,
-	// )`,
-	// 	`CREATE TABLE IF NOT EXISTS domain_records (
-	//   id INTEGER PRIMARY KEY,
-	//   domain_id INTEGER REFERENCES domains(id) ON DELETE CASCADE ON UPDATE CASCADE,
-	//   record TEXT NOT NULL,
-	// )`,
+	`
+CREATE TABLE IF NOT EXISTS hosts (
+  host_id INTEGER PRIMARY KEY,
+  realm_id INTEGER REFERENCES realms(realm_id) ON DELETE CASCADE ON UPDATE CASCADE,
+  hostname TEXT NOT NULL,
+  description TEXT
+)`,
+
+	`
+CREATE TABLE IF NOT EXISTS host_addrs (
+  addr_id INTEGER PRIMARY KEY,
+  realm_id INTEGER REFERENCES realms(realm_id) ON DELETE CASCADE ON UPDATE CASCADE,
+  host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  address TEXT NOT NULL,
+  UNIQUE (realm_id, address)
+)`,
+
+	`
+CREATE TABLE IF NOT EXISTS domains (
+  domain_id INTEGER PRIMARY KEY,
+  realm_id INTEGER REFERENCES realms(realm_id) ON DELETE CASCADE ON UPDATE CASCADE,
+  name TEXT NOT NULL,
+  primary_ns TEXT NOT NULL,
+  email TEXT NOT NULL,
+  slave_refresh INTEGER DEFAULT 900,
+  slave_retry INTEGER DEFAULT 900,
+  slave_expiry INTEGER DEFAULT 1814400,
+  nxdomain_ttl INTEGER DEFAULT 600,
+  serial INTEGER DEFAULT 0
+)`,
+
+	`
+CREATE TABLE IF NOT EXISTS domain_records (
+  record_id INTEGER PRIMARY KEY,
+  domain_id INTEGER REFERENCES domains(domain_id) ON DELETE CASCADE ON UPDATE CASCADE,
+  record TEXT NOT NULL
+)`,
 }
