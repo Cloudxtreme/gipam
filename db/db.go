@@ -36,8 +36,12 @@ func New(path string) (*DB, error) {
 	return &DB{db}, nil
 }
 
-func (db *DB) create(stmt string, args ...interface{}) error {
-	if _, err := db.db.Exec(stmt, args...); err != nil {
+func (db *DB) create(tx *sql.Tx, stmt string, args ...interface{}) error {
+	ex := db.db.Exec
+	if tx != nil {
+		ex = tx.Exec
+	}
+	if _, err := ex(stmt, args...); err != nil {
 		if sqliteErr, ok := err.(sqlite.Error); ok && sqliteErr.Code == sqlite.ErrConstraint {
 			return ErrConflict
 		}
@@ -46,8 +50,12 @@ func (db *DB) create(stmt string, args ...interface{}) error {
 	return nil
 }
 
-func (db *DB) save(stmt string, args ...interface{}) error {
-	res, err := db.db.Exec(stmt, args...)
+func (db *DB) save(tx *sql.Tx, stmt string, args ...interface{}) error {
+	ex := db.db.Exec
+	if tx != nil {
+		ex = tx.Exec
+	}
+	res, err := ex(stmt, args...)
 	if err != nil {
 		return err
 	}
@@ -61,8 +69,12 @@ func (db *DB) save(stmt string, args ...interface{}) error {
 	return nil
 }
 
-func (db *DB) delete(stmt string, args ...interface{}) error {
-	_, err := db.db.Exec(stmt, args...)
+func (db *DB) delete(tx *sql.Tx, stmt string, args ...interface{}) error {
+	ex := db.db.Exec
+	if tx != nil {
+		ex = tx.Exec
+	}
+	_, err := ex(stmt, args...)
 	return err
 }
 
@@ -83,17 +95,17 @@ func (db *DB) Realm(name string) *Realm {
 
 func (r *Realm) Create() error {
 	q := `INSERT INTO realms VALUES (NULL, $1, $2)`
-	return r.db.create(q, r.Name, r.Description)
+	return r.db.create(nil, q, r.Name, r.Description)
 }
 
 func (r *Realm) Save() error {
 	q := `UPDATE realms SET description = $1 WHERE name = $2`
-	return r.db.save(q, r.Description, r.Name)
+	return r.db.save(nil, q, r.Description, r.Name)
 }
 
 func (r *Realm) Delete() error {
 	q := `DELETE FROM realms WHERE name = $1`
-	return r.db.delete(q, r.Name)
+	return r.db.delete(nil, q, r.Name)
 }
 
 func (r *Realm) Get() error {
@@ -117,36 +129,30 @@ func (r *Realm) Prefix(prefix *net.IPNet) *Prefix {
 
 func (r *Realm) GetPrefixTree() (roots []*PrefixTree, err error) {
 	q := `
-SELECT prefix, Children.description, (
-  SELECT prefix
-  FROM prefixes INNER JOIN realms USING (realm_id)
-  WHERE realms.name = $1 AND isSubnetOf(prefix, Children.prefix) AND prefix != Children.prefix
-  ORDER BY prefixlen(prefix) DESC
-  LIMIT 1
-) AS parent
-FROM prefixes AS Children INNER JOIN realms USING (realm_id)
+SELECT prefix_id, parent_id, prefix, prefixes.description
+FROM prefixes INNER JOIN realms USING (realm_id)
 WHERE realms.name = $1
-ORDER BY prefixlen(prefix), prefixBytes(prefix)`
-
+ORDER BY parent_id
+`
 	rows, err := r.db.db.Query(q, r.Name)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	prefixes := map[string]*PrefixTree{}
+	prefixes := map[int64]*PrefixTree{}
 	for rows.Next() {
-		var child, desc string
-		var parent *string
-		if err = rows.Scan(&child, &desc, &parent); err != nil {
+		var prefixId int64
+		var parentId *int64
+		var pfx, desc string
+
+		if err = rows.Scan(&prefixId, &parentId, &pfx, &desc); err != nil {
 			return nil, err
 		}
-		_, n, err := net.ParseCIDR(child)
+		_, n, err := net.ParseCIDR(pfx)
 		if err != nil {
 			return nil, err
 		}
-
-		pt := &PrefixTree{
+		p := &PrefixTree{
 			Prefix: &Prefix{
 				db:          r.db,
 				realm:       r.Name,
@@ -154,12 +160,14 @@ ORDER BY prefixlen(prefix), prefixBytes(prefix)`
 				Description: desc,
 			},
 		}
-		if parent == nil {
-			roots = append(roots, pt)
+
+		if parentId == nil {
+			roots = append(roots, p)
 		} else {
-			prefixes[*parent].Children = append(prefixes[*parent].Children, pt)
+			parent := prefixes[*parentId]
+			parent.Children = append(parent.Children, p)
 		}
-		prefixes[child] = pt
+		prefixes[prefixId] = p
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
@@ -177,23 +185,73 @@ type Prefix struct {
 }
 
 func (p *Prefix) Create() error {
-	q := `INSERT INTO prefixes VALUES (NULL, (SELECT realm_id FROM realms WHERE name = $1), $2, $3)`
-	return p.db.create(q, p.realm, p.Prefix.String(), p.Description)
+	tx, err := p.db.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var parentId *int64
+	q := `SELECT prefix_id FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 AND isSubnetOf(prefix, $2) ORDER BY prefixLen(prefix) DESC LIMIT 1`
+	err = tx.QueryRow(q, p.realm, p.Prefix.String()).Scan(&parentId)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	q = `INSERT INTO prefixes VALUES (NULL, (SELECT realm_id FROM realms WHERE name = $1), $2, $3, $4)`
+	if err = p.db.create(tx, q, p.realm, parentId, p.Prefix.String(), p.Description); err != nil {
+		return err
+	}
+
+	var realmId, prefixId int64
+	q = `SELECT realm_id, prefix_id FROM prefixes INNDER JOIN realms USING (realm_id) WHERE name = $1 AND prefix = $2`
+	if err = tx.QueryRow(q, p.realm, p.Prefix.String()).Scan(&realmId, &prefixId); err != nil {
+		return err
+	}
+
+	q = `UPDATE prefixes SET parent_id = $1 WHERE realm_id = $2 AND prefix != $3 AND isSubnetOf($3, prefix)`
+	if _, err = tx.Exec(q, prefixId, realmId, p.Prefix.String()); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (p *Prefix) Save() error {
 	q := `UPDATE prefixes SET description = $1 WHERE prefix = $2 AND realm_id = (SELECT realm_id FROM realms WHERE name = $3)`
-	return p.db.save(q, p.Description, p.Prefix.String(), p.realm)
+	return p.db.save(nil, q, p.Description, p.Prefix.String(), p.realm)
 }
 
 func (p *Prefix) Delete() error {
-	q := `DELETE FROM prefixes WHERE prefix = $1 AND realm_id = (SELECT realm_id FROM realms WHERE name = $2)`
-	return p.db.delete(q, p.Prefix.String(), p.realm)
+	tx, err := p.db.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var realmId, prefixId int64
+	var parentId *int64
+	q := `SELECT prefixes.realm_id, prefix_id, parent_id FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 AND prefix = $2`
+	if err = tx.QueryRow(q, p.realm, p.Prefix.String()).Scan(&realmId, &prefixId, &parentId); err != nil {
+		return err
+	}
+
+	q = `UPDATE prefixes SET parent_id = $1 WHERE realm_id = $2 AND parent_id = $3`
+	if _, err = tx.Exec(q, parentId, realmId, prefixId); err != nil {
+		return err
+	}
+
+	q = `DELETE FROM prefixes WHERE realm_id = $1 AND prefix_id = $2`
+	if err = p.db.save(tx, q, realmId, prefixId); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (p *Prefix) Get() error {
-	q := `SELECT prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE prefix = $1 AND realms.name = $2`
-	if err := p.db.db.QueryRow(q, p.Prefix.String(), p.realm).Scan(&p.Description); err != nil {
+	q := `SELECT prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE name = $1 AND prefix = $2`
+	if err := p.db.db.QueryRow(q, p.realm, p.Prefix.String()).Scan(&p.Description); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrNotFound
 		}
@@ -203,18 +261,47 @@ func (p *Prefix) Get() error {
 }
 
 func (p *Prefix) GetLongestMatch() (*Prefix, error) {
-	matches, err := p.GetMatches()
+	// First try a straight Get(), which will be indexed and fast.
+	p = &Prefix{db: p.db, realm: p.realm, Prefix: p.Prefix}
+	if err := p.Get(); err == nil {
+		return p, nil
+	}
+
+	// No luck, do the expensive longest match query.
+	q := `SELECT prefix, prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 AND isSubnetOf(prefix, $2) ORDER BY prefixLen(prefix) DESC LIMIT 1`
+
+	var pfx string
+	if err := p.db.db.QueryRow(q, p.realm, p.Prefix.String()).Scan(&pfx, &p.Description); err != nil {
+		return nil, err
+	}
+	_, n, err := net.ParseCIDR(pfx)
 	if err != nil {
 		return nil, err
 	}
-	if len(matches) == 0 {
-		return nil, ErrNotFound
-	}
-	return matches[0], nil
+	p.Prefix = n
+	return p, nil
 }
 
 func (p *Prefix) GetMatches() (matches []*Prefix, err error) {
-	q := `SELECT prefix, prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 AND isSubnetOf(prefix, $2) ORDER BY prefixLen(prefix) DESC`
+	p, err = p.GetLongestMatch()
+	if err != nil {
+		return nil, err
+	}
+
+	q := `
+WITH RECURSIVE pfx(realm_id, prefix, desc, parent_id) AS (
+  SELECT prefixes.realm_id, prefix, prefixes.description, parent_id
+  FROM prefixes INNER JOIN realms USING (realm_id)
+  WHERE realms.name = $1 AND prefix = $2
+UNION ALL
+  SELECT prefixes.realm_id, prefixes.prefix, prefixes.description, prefixes.parent_id
+  FROM prefixes, pfx
+  WHERE pfx.parent_id IS NOT NULL AND prefixes.prefix_id = pfx.parent_id
+)
+SELECT prefix, desc
+FROM pfx
+ORDER BY prefixLen(prefix) DESC
+`
 	rows, err := p.db.db.Query(q, p.realm, p.Prefix.String())
 	if err != nil {
 		return nil, err

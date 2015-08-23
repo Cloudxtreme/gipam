@@ -8,9 +8,11 @@ var createStmts = []string{
 )`,
 	`CREATE TABLE IF NOT EXISTS prefixes (
   prefix_id INTEGER PRIMARY KEY,
-  realm_id INTEGER REFERENCES realms ON DELETE CASCADE ON UPDATE CASCADE,
+  realm_id INTEGER NOT NULL REFERENCES realms ON DELETE CASCADE ON UPDATE CASCADE,
+  parent_id INTEGER DEFAULT NULL REFERENCES prefixes(prefix_id) ON DELETE RESTRICT ON UPDATE CASCADE,
   prefix TEXT UNIQUE NOT NULL,
-  description TEXT
+  description TEXT,
+  UNIQUE (realm_id, prefix)
 )`,
 	// 	`CREATE TABLE IF NOT EXISTS hosts (
 	//   id INTEGER PRIMARY KEY,

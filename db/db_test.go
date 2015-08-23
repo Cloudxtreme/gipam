@@ -1,7 +1,6 @@
 package db
 
 import (
-	"math/rand"
 	"net"
 	"reflect"
 	"testing"
@@ -164,7 +163,7 @@ func TestPrefix(t *testing.T) {
 		return ret
 	}
 	if !reflect.DeepEqual(walkTree(roots, 0), expected) {
-		t.Errorf("GetPrefixTree() = %v, got %v", walkTree(roots, 0), expected)
+		t.Errorf("GetPrefixTree() = %v, want %v", walkTree(roots, 0), expected)
 	}
 
 	for _, prefix := range prefixes {
@@ -175,8 +174,8 @@ func TestPrefix(t *testing.T) {
 		if err = p.Get(); err != ErrNotFound {
 			t.Errorf("DB isn't returning not found after deleting %s", prefix)
 		}
-		if err = p.Delete(); err != nil {
-			t.Fatalf("Double-deleting realm %s: %s", prefix, err)
+		if err = p.Delete(); err == nil {
+			t.Fatalf("Double-deleting realm %s: expected error, got none", prefix, err)
 		}
 	}
 }
@@ -290,42 +289,3 @@ func TestMatches(t *testing.T) {
 		}
 	}
 }
-
-func benchPrefixTree(pfxcnt int, b *testing.B) {
-	db, err := New(":memory:")
-	if err != nil {
-		b.Fatal("Cannot create in-memory DB:", err)
-	}
-
-	r := db.Realm("prod")
-	if err = r.Create(); err != nil {
-		b.Fatalf("Creating realm: %s", err)
-	}
-
-	var actualPrefixes int64
-	for _, l := range []int{8, 16, 24, 32} {
-		for n := 0; n < pfxcnt; n++ {
-			ip := make([]byte, 4)
-			for i := 0; i < l/8; i++ {
-				ip[i] = byte(rand.Int())
-			}
-			//fmt.Println(net.IP(ip), net.CIDRMask(l, 32))
-			pfx := &net.IPNet{net.IP(ip), net.CIDRMask(l, 32)}
-			if err := r.Prefix(pfx).Create(); err == nil {
-				actualPrefixes++
-			}
-		}
-		pfxcnt *= 10
-	}
-
-	b.ResetTimer()
-	for n := 0; n < b.N; n++ {
-		r.GetPrefixTree()
-	}
-}
-
-func BenchmarkPrefixTree1(b *testing.B) { benchPrefixTree(1, b) }
-
-// func BenchmarkPrefixTree2(b *testing.B)  { benchPrefixTree(2, b) }
-// func BenchmarkPrefixTree5(b *testing.B)  { benchPrefixTree(5, b) }
-// func BenchmarkPrefixTree10(b *testing.B) { benchPrefixTree(10, b) }
