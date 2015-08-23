@@ -7,6 +7,7 @@ import (
 )
 
 func TestRealm(t *testing.T) {
+	t.Parallel()
 	db, err := New(":memory:")
 	if err != nil {
 		t.Fatal("Cannot create in-memory DB:", err)
@@ -80,6 +81,7 @@ func CIDR(s string) *net.IPNet {
 }
 
 func TestPrefix(t *testing.T) {
+	t.Parallel()
 	db, err := New(":memory:")
 	if err != nil {
 		t.Fatal("Cannot create in-memory DB:", err)
@@ -181,6 +183,7 @@ func TestPrefix(t *testing.T) {
 }
 
 func TestLongestMatch(t *testing.T) {
+	t.Parallel()
 	db, err := New(":memory:")
 	if err != nil {
 		t.Fatal("Cannot create in-memory DB:", err)
@@ -239,6 +242,7 @@ func TestLongestMatch(t *testing.T) {
 }
 
 func TestMatches(t *testing.T) {
+	t.Parallel()
 	db, err := New(":memory:")
 	if err != nil {
 		t.Fatal("Cannot create in-memory DB:", err)
