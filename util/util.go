@@ -18,7 +18,7 @@ func PrefixContains(n1, n2 *net.IPNet) bool {
 		panic(fmt.Sprintf("%q is not a well-formed CIDR prefix", n2))
 	}
 
-	return m2 >= m1 && n1.IP.Mask(n1.Mask).Equal(n2.IP.Mask(n1.Mask))
+	return m2 > m1 && n1.IP.Mask(n1.Mask).Equal(n2.IP.Mask(n1.Mask))
 }
 
 func isv4(n net.IP) bool {

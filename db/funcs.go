@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"encoding/binary"
 	"net"
 
 	sqlite "github.com/mattn/go-sqlite3"
@@ -17,13 +16,10 @@ func init() {
 	sql.Register("sqlite3_gipam",
 		&sqlite.SQLiteDriver{
 			ConnectHook: func(conn *sqlite.SQLiteConn) error {
-				if err := conn.RegisterFunc("isSubnetOf", dbIsSubnetOf, true); err != nil {
+				if err := conn.RegisterFunc("prefixIsInside", dbPrefixIsInside, true); err != nil {
 					return err
 				}
 				if err := conn.RegisterFunc("prefixLen", dbPrefixLen, true); err != nil {
-					return err
-				}
-				if err := conn.RegisterFunc("prefixAsInt", dbPrefixAsInt, true); err != nil {
 					return err
 				}
 				return nil
@@ -31,8 +27,11 @@ func init() {
 		})
 }
 
-// dbIsSubnetOf returns true if child is a subnet of parent, or is equal to parent.
-func dbIsSubnetOf(parent, child string) (bool, error) {
+// Return true if child is a strict subnet of parent.
+//
+// "Strict" means that dbPrefixIsInside(a, a) is False, so you need to
+// add an equality test to your query if you want identity matches.
+func dbPrefixIsInside(child, parent string) (bool, error) {
 	_, n1, err := net.ParseCIDR(parent)
 	if err != nil {
 		return false, err
@@ -53,25 +52,4 @@ func dbPrefixLen(pfx string) (int, error) {
 	}
 	l, _ := n.Mask.Size()
 	return l, nil
-}
-
-func dbPrefixAsInt(pfx string, upper bool, max bool) (uint64, error) {
-	_, n, err := net.ParseCIDR(pfx)
-	if err != nil {
-		return 0, err
-	}
-	if len(n.IP) != len(n.Mask) {
-		panic("Incoherent IP/mask")
-	}
-	if max {
-		for i := range n.IP {
-			n.IP[i] |= 0xff & ^n.Mask[i]
-		}
-	}
-	ip := n.IP.To16()
-	if upper {
-		return binary.BigEndian.Uint64(ip[:8]), nil
-	} else {
-		return binary.BigEndian.Uint64(ip[8:]), nil
-	}
 }

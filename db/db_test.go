@@ -1,10 +1,13 @@
 package db
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -296,7 +299,99 @@ func TestMatches(t *testing.T) {
 	}
 }
 
-func BenchmarkInsertions(b *testing.B) {
+var roDB *DB
+var roDBOnce sync.Once
+
+func readonlyDB() *DB {
+	numPrefixes := 100
+	roDBOnce.Do(func() {
+		var prefixes []*net.IPNet
+		for _, l := range []int{8, 16, 24, 32} {
+			b := l / 8
+			for n := 0; n < numPrefixes; n++ {
+				ip := make([]byte, 4)
+				for i := 0; i < b; i++ {
+					ip[i] = byte(rand.Int())
+				}
+				prefixes = append(prefixes, &net.IPNet{net.IP(ip), net.CIDRMask(l, 32)})
+			}
+		}
+
+		db, err := New(":memory:")
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		r := db.Realm("prod")
+		if err = r.Create(); err != nil {
+			log.Fatalln(err)
+		}
+
+		for _, p := range prefixes {
+			r.Prefix(p).Create()
+		}
+		roDB = db
+	})
+	return roDB
+}
+
+func BenchmarkLongestMatch(b *testing.B) {
+	db := readonlyDB()
+
+	var p *Prefix
+	var err error
+	for p == nil || err != nil {
+		ip := make([]byte, 4)
+		for i := range ip {
+			ip[i] = byte(rand.Int())
+		}
+		p = db.Realm("prod").Prefix(&net.IPNet{net.IP(ip), net.CIDRMask(32, 32)})
+		p2, err := p.GetLongestMatch()
+		if err == nil && reflect.DeepEqual(p, p2) {
+			err = errors.New("")
+		} else {
+			p = p2
+		}
+	}
+
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		if _, err := p.GetLongestMatch(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatches(b *testing.B) {
+	db := readonlyDB()
+
+	var p *Prefix
+	var err error
+	for p == nil || err != nil {
+		ip := make([]byte, 4)
+		for i := range ip {
+			ip[i] = byte(rand.Int())
+		}
+		p = db.Realm("prod").Prefix(&net.IPNet{net.IP(ip), net.CIDRMask(32, 32)})
+		p2, err := p.GetLongestMatch()
+		if err == nil && reflect.DeepEqual(p, p2) {
+			err = errors.New("")
+		} else {
+			p = p2
+		}
+	}
+
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		if _, err := p.GetMatches(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// This benchmark is mostly useful for very manual inspection and
+// debugging, so it's off by default.
+func dontBenchmarkInsertions(b *testing.B) {
 	var prefixes []*net.IPNet
 	for _, l := range []int{32, 24, 16, 8} {
 		for n := 0; n < 1000; n++ {
