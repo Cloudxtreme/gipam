@@ -26,7 +26,7 @@ func TestRealm(t *testing.T) {
 			t.Fatalf("Failed to create realm %s: %s", r.N, err)
 		}
 
-		if err = realm.Create(); err != ErrConflict {
+		if err = realm.Create(); err != ErrAlreadyExists {
 			t.Errorf("Was able to create realm %s twice (err: %s)", r.N, err)
 		}
 	}
@@ -106,7 +106,7 @@ func TestPrefix(t *testing.T) {
 			t.Fatalf("Failed to create prefix %s: %s", prefix, err)
 		}
 
-		if err = p.Create(); err != ErrConflict {
+		if err = p.Create(); err != ErrAlreadyExists {
 			t.Errorf("Was able to create %s twice (err: %s)", prefix, err)
 		}
 	}

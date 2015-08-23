@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"net"
 
 	sqlite "github.com/mattn/go-sqlite3"
@@ -22,7 +23,7 @@ func init() {
 				if err := conn.RegisterFunc("prefixLen", dbPrefixLen, true); err != nil {
 					return err
 				}
-				if err := conn.RegisterFunc("prefixBytes", dbPrefixBytes, true); err != nil {
+				if err := conn.RegisterFunc("prefixAsInt", dbPrefixAsInt, true); err != nil {
 					return err
 				}
 				return nil
@@ -54,10 +55,23 @@ func dbPrefixLen(pfx string) (int, error) {
 	return l, nil
 }
 
-func dbPrefixBytes(pfx string) ([]byte, error) {
+func dbPrefixAsInt(pfx string, upper bool, max bool) (uint64, error) {
 	_, n, err := net.ParseCIDR(pfx)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return n.IP.To16(), nil
+	if len(n.IP) != len(n.Mask) {
+		panic("Incoherent IP/mask")
+	}
+	if max {
+		for i := range n.IP {
+			n.IP[i] |= 0xff & ^n.Mask[i]
+		}
+	}
+	ip := n.IP.To16()
+	if upper {
+		return binary.BigEndian.Uint64(ip[:8]), nil
+	} else {
+		return binary.BigEndian.Uint64(ip[8:]), nil
+	}
 }
