@@ -35,6 +35,13 @@ func New(path string) (*DB, error) {
 	return &DB{db}, nil
 }
 
+func (db *DB) Realm(name string) *Realm {
+	return &Realm{
+		db:   db.db,
+		Name: name,
+	}
+}
+
 func errIsAlreadyExists(err error) bool {
 	if sqliteErr, ok := err.(sqlite.Error); ok && (sqliteErr.ExtendedCode == sqlite.ErrConstraintUnique || sqliteErr.ExtendedCode == sqlite.ErrConstraintPrimaryKey) {
 		return true
