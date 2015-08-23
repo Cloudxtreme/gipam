@@ -1,6 +1,8 @@
 package db
 
 import (
+	"fmt"
+	"math/rand"
 	"net"
 	"reflect"
 	"testing"
@@ -291,5 +293,38 @@ func TestMatches(t *testing.T) {
 		if !reflect.DeepEqual(actual, l.out) {
 			t.Errorf("LPM lookup for %s returned %v, want %v", l.in, actual, l.out)
 		}
+	}
+}
+
+func BenchmarkInsertions(b *testing.B) {
+	var prefixes []*net.IPNet
+	for _, l := range []int{32, 24, 16, 8} {
+		for n := 0; n < 1000; n++ {
+			b := l / 8
+			ip := make([]byte, 4)
+			for i := 0; i < b; i++ {
+				ip[i] = byte(rand.Int())
+			}
+			prefixes = append(prefixes, &net.IPNet{net.IP(ip), net.CIDRMask(l, 32)})
+		}
+	}
+
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		fmt.Println(n)
+		db, err := New(":memory:")
+		if err != nil {
+			b.Fatal("Cannot create in-memory DB:", err)
+		}
+
+		r := db.Realm("prod")
+		if err = r.Create(); err != nil {
+			b.Fatalf("Creating realm: %s", err)
+		}
+
+		for _, p := range prefixes {
+			r.Prefix(p).Create()
+		}
+		db.Close()
 	}
 }

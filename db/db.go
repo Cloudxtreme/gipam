@@ -3,6 +3,9 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"text/tabwriter"
 
 	sqlite "github.com/mattn/go-sqlite3"
 )
@@ -42,6 +45,10 @@ func (db *DB) Realm(name string) *Realm {
 	}
 }
 
+func (db *DB) Close() error {
+	return db.db.Close()
+}
+
 func errIsAlreadyExists(err error) bool {
 	if sqliteErr, ok := err.(sqlite.Error); ok && (sqliteErr.ExtendedCode == sqlite.ErrConstraintUnique || sqliteErr.ExtendedCode == sqlite.ErrConstraintPrimaryKey) {
 		return true
@@ -58,4 +65,28 @@ func mustHaveChanged(res sql.Result) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func printExplain(db *sql.Tx, stmt string, args ...interface{}) {
+	rows, err := db.Query("EXPLAIN "+stmt, args...)
+	if err != nil {
+		fmt.Printf("Error getting query plan: %s\n", err)
+		return
+	}
+	defer rows.Close()
+	w := new(tabwriter.Writer)
+	w.Init(os.Stdout, 5, 0, 1, ' ', tabwriter.Debug)
+	fmt.Fprintf(w, "addr\topcode\tp1\tp2\tp3\tp4\tp5\tcomment\n")
+	for rows.Next() {
+		var a, b, c, d, e, f, g, h sql.NullString
+		if err = rows.Scan(&a, &b, &c, &d, &e, &f, &g, &h); err != nil {
+			fmt.Printf("Row decode error: %s", err)
+			return
+		}
+		fmt.Fprintf(w, "%s \t%s \t%s \t%s \t%s \t%s \t%s \t%s \n", a.String, b.String, c.String, d.String, e.String, f.String, g.String, h.String)
+	}
+	w.Flush()
+	if err = rows.Err(); err != nil {
+		fmt.Printf("Query error: %s\n", err)
+	}
 }

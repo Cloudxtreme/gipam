@@ -45,7 +45,25 @@ VALUES ((SELECT realm_id FROM realms WHERE name = $1), $2, $3, $4)`
 		return err
 	}
 
-	q = `UPDATE prefixes SET parent_id = $1 WHERE realm_id = $2 AND prefix != $3 AND isSubnetOf($3, prefix)`
+	// The giant WHERE clause implements "only update rows that are a
+	// subnet of the new prefix. For the win!
+	q = `
+UPDATE prefixes SET parent_id = $1
+WHERE realm_id = $2
+  AND prefixlen > prefixLen($3)
+  AND ((upper64 >= prefixAsInt($3, 1, 0))
+       !=
+       ((upper64 < 0) != (prefixAsInt($3, 1, 0) < 0)))
+  AND ((upper64 <= prefixAsInt($3, 1, 1))
+       !=
+       ((upper64 < 0) != (prefixAsInt($3, 1, 1) < 0)))
+  AND ((lower64 >= prefixAsInt($3, 0, 0))
+       !=
+       ((lower64 < 0) != (prefixAsInt($3, 0, 0) < 0)))
+  AND ((lower64 <= prefixAsInt($3, 0, 1))
+       !=
+       ((lower64 < 0) != (prefixAsInt($3, 0, 1) < 0)))
+`
 	if _, err = tx.Exec(q, prefixId, realmId, p.Prefix.String()); err != nil {
 		return err
 	}
@@ -54,7 +72,10 @@ VALUES ((SELECT realm_id FROM realms WHERE name = $1), $2, $3, $4)`
 }
 
 func (p *Prefix) Save() error {
-	q := `UPDATE prefixes SET description = $1 WHERE prefix = $2 AND realm_id = (SELECT realm_id FROM realms WHERE name = $3)`
+	q := `
+UPDATE prefixes
+SET description = $1
+WHERE prefix = $2 AND realm_id = (SELECT realm_id FROM realms WHERE name = $3)`
 	res, err := p.db.Exec(q, p.Description, p.Prefix.String(), p.realm)
 	if err != nil {
 		return err
@@ -107,8 +128,25 @@ func (p *Prefix) GetLongestMatch() (*Prefix, error) {
 		return p, nil
 	}
 
-	// No luck, do the expensive longest match query.
-	q := `SELECT prefix, prefixes.description FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 AND isSubnetOf(prefix, $2) ORDER BY prefixLen(prefix) DESC LIMIT 1`
+	// No luck, do the more expensive longest match query.
+	q := `
+SELECT prefix, prefixes.description
+FROM prefixes INNER JOIN realms USING (realm_id)
+WHERE realms.name = $1
+  AND prefixlen < prefixLen($2)
+  AND ((upper64 <= prefixAsInt($2, 1, 0))
+       !=
+       ((upper64 < 0) != (prefixAsInt($2, 1, 0) < 0)))
+  AND ((upper64_max >= prefixAsInt($2, 1, 0))
+       !=
+       ((upper64_max < 0) != (prefixAsInt($2, 1, 0) < 0)))
+  AND ((lower64 <= prefixAsInt($2, 0, 0))
+       !=
+       ((lower64 < 0) != (prefixAsInt($2, 0, 0) < 0)))
+  AND ((lower64_max >= prefixAsInt($2, 0, 0))
+       !=
+       ((lower64_max < 0) != (prefixAsInt($2, 0, 0) < 0)))
+ORDER BY prefixlen DESC LIMIT 1`
 
 	var pfx string
 	if err := p.db.QueryRow(q, p.realm, p.Prefix.String()).Scan(&pfx, &p.Description); err != nil {

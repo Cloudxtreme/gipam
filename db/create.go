@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS realms (
   name TEXT UNIQUE NOT NULL,
   description TEXT
 )`,
+
 	`
 CREATE TABLE IF NOT EXISTS prefixes (
   prefix_id INTEGER PRIMARY KEY,
@@ -26,7 +27,6 @@ CREATE TABLE IF NOT EXISTS prefixes (
 
   UNIQUE (realm_id, prefix)
 )`,
-
 	`
 CREATE TRIGGER IF NOT EXISTS prefixes_insert_denormalized
   AFTER INSERT ON prefixes
