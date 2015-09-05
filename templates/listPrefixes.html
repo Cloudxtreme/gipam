@@ -1,6 +1,6 @@
 {{define "Prefix"}}
 <tr>
-  <td class="col-sm-3" style="padding-left: calc({{.Depth}} * 1.5em)">
+  <td class="col-sm-3" style="font-family: monospace; padding-left: calc({{.Depth}} * 1.5em)">
     {{.Prefix.Prefix}}
     <div class="dropdown" style="display: inline">
       <button class="btn btn-default btn-xs dropdown-toggle" style="background-image: none; border: 0; box-shadow: none" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
@@ -50,7 +50,7 @@
 </div>
 
 <!-- Prefix creator -->
-<div class="modal fade" id="createOrEdit" tabindex="-1" role="dialog" aria-labelledby="createOrEditTitle">
+<div class="modal" id="createOrEdit" tabindex="-1" role="dialog" aria-labelledby="createOrEditTitle">
   <div class="modal-dialog modal-lg" role="document">
     <div class="modal-content">
       <div class="modal-header">
@@ -107,7 +107,7 @@
 
 
 <!-- Prefix deleter -->
-<div class="modal fade" id="delete" tabindex="-1" role="dialog" aria-labelledby="deleteTitle">
+<div class="modal" id="delete" tabindex="-1" role="dialog" aria-labelledby="deleteTitle">
   <div class="modal-dialog modal-lg" role="document">
     <div class="modal-content">
       <div class="modal-header">
@@ -139,13 +139,13 @@
      if (pfxId != null) {
        modal.find("#createOrEditTitle").html("Edit " + pfx);
        modal.find("#prefixID").val(pfxId);
-       modal.find("#prefix").val(pfx).prop('disabled', true);
+       modal.find("#prefix").val(pfx);
        modal.find("#desc").val(pfxDesc);
        modal.find("#submitCreate").css("display", "none");
        modal.find("#submitEdit").css("display", "inline");
      } else {
        modal.find("#createOrEditTitle").html("Create Prefix");
-       modal.find("#prefix").val("").prop('disabled', false);
+       modal.find("#prefix").val("")
        modal.find("#desc").val("");
        modal.find("#submitCreate").css("display", "inline");
        modal.find("#submitEdit").css("display", "none");
@@ -181,6 +181,7 @@
        type: 'PUT',
        url: '/api/realms/{{.RealmID}}/prefixes/' + $("#prefixID").val(),
        data: JSON.stringify({
+         prefix: $("#prefix").val(),
          description: $("#desc").val(),
        }),
        contentType: "application/json",

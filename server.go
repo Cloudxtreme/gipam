@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -17,9 +18,15 @@ func runServer(addr string, dbPath string) error {
 		return err
 	}
 
+	tmpl, err := compileTemplates()
+	if err != nil {
+		return err
+	}
+
 	s := &server{
 		dbPath: dbPath,
 		db:     db,
+		tmpl:   tmpl,
 		mux:    mux.NewRouter(),
 	}
 
@@ -79,7 +86,10 @@ func runServer(addr string, dbPath string) error {
 type server struct {
 	dbPath string
 	db     *sql.DB
-	mux    *mux.Router
+
+	tmpl *template.Template
+
+	mux *mux.Router
 }
 
 type api struct {

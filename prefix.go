@@ -158,18 +158,10 @@ func (s *server) createPrefix(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	var parentID *int64
-	q := `SELECT prefix_id FROM prefixes WHERE realm_id=$1 AND prefixIsInside($2, prefix) ORDER BY prefixLen(prefix) DESC LIMIT 1`
-	err = tx.QueryRow(q, realmID, pfx.Prefix.String()).Scan(&parentID)
-	if err != nil && err != sql.ErrNoRows {
-		errorJSON(w, err)
-		return
-	}
-
-	q = `
+	q := `
 INSERT INTO prefixes (realm_id, parent_id, prefix, description)
-VALUES ($1, $2, $3, $4)`
-	res, err := tx.Exec(q, realmID, parentID, pfx.Prefix.String(), pfx.Description)
+VALUES ($1, NULL, $2, $3)`
+	res, err := tx.Exec(q, realmID, pfx.Prefix.String(), pfx.Description)
 	if err != nil {
 		errorJSON(w, err)
 		return
@@ -181,26 +173,9 @@ VALUES ($1, $2, $3, $4)`
 		return
 	}
 
-	if parentID == nil {
-		q = `
-UPDATE prefixes SET parent_id=$1
-WHERE realm_id=$2
-AND parent_id IS NULL AND prefixIsInside(prefix, $3)
-`
-		if _, err = tx.Exec(q, pfx.Id, realmID, pfx.Prefix.String()); err != nil {
-			errorJSON(w, err)
-			return
-		}
-	} else {
-		q = `
-UPDATE prefixes SET parent_id=$1
-WHERE realm_id=$2
-AND parent_id=$3 AND prefixIsInside(prefix, $4)
-`
-		if _, err = tx.Exec(q, pfx.Id, realmID, *parentID, pfx.Prefix.String()); err != nil {
-			errorJSON(w, err)
-			return
-		}
+	if err := s.attachPrefix(tx, realmID, pfx.Id, pfx.Prefix.String()); err != nil {
+		errorJSON(w, err)
+		return
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -230,9 +205,49 @@ func (s *server) editPrefix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := `UPDATE prefixes SET description=$1 WHERE realm_id=$2 AND prefix_id=$3`
-	_, err = s.db.Exec(q, pfx.Description, realmID, prefixID)
+	tx, err := s.db.Begin()
 	if err != nil {
+		errorJSON(w, err)
+		return
+	}
+	defer tx.Rollback()
+
+	q := `SELECT prefix FROM prefixes WHERE realm_id=$1 AND prefix_id=$2`
+	var currentPrefix string
+	if err = tx.QueryRow(q, realmID, prefixID).Scan(&currentPrefix); err != nil {
+		errorJSON(w, err)
+		return
+	}
+
+	changePrefix := pfx.Prefix != nil && currentPrefix != pfx.Prefix.String()
+	fmt.Println(changePrefix)
+	if changePrefix {
+		if err := s.detachPrefix(tx, realmID, prefixID); err != nil {
+			errorJSON(w, err)
+			return
+		}
+
+		q = `UPDATE prefixes SET prefix=$1, description=$2 WHERE realm_id=$3 AND prefix_id=$4`
+		_, err = tx.Exec(q, pfx.Prefix.String(), pfx.Description, realmID, prefixID)
+		if err != nil {
+			errorJSON(w, err)
+			return
+		}
+
+		if err := s.attachPrefix(tx, realmID, prefixID, pfx.Prefix.String()); err != nil {
+			errorJSON(w, err)
+			return
+		}
+	} else {
+		q = `UPDATE prefixes SET description=$1 WHERE realm_id=$2 AND prefix_id=$3`
+		_, err = tx.Exec(q, pfx.Description, realmID, prefixID)
+		if err != nil {
+			errorJSON(w, err)
+			return
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
 		errorJSON(w, err)
 		return
 	}
@@ -268,10 +283,9 @@ func (s *server) deletePrefix(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	if !recursive {
-		// To avoid a cascading delete, we need to reparent explicitly
+		// To avoid a cascading delete, we need to detach explicitly
 		// first.
-		q := `UPDATE prefixes SET parent_id=(SELECT parent_id FROM prefixes WHERE realm_id=$1 AND prefix_id=$2) WHERE realm_id=$1 AND parent_id=$2`
-		if _, err := s.db.Exec(q, realmID, prefixID); err != nil {
+		if err := s.detachPrefix(tx, realmID, prefixID); err != nil {
 			errorJSON(w, err)
 			return
 		}
@@ -280,7 +294,7 @@ func (s *server) deletePrefix(w http.ResponseWriter, r *http.Request) {
 	// ON DELETE CASCADE takes care of nuking the children in the
 	// recursive case.
 	q := `DELETE FROM prefixes WHERE realm_id=$1 AND prefix_id=$2`
-	if _, err := s.db.Exec(q, realmID, prefixID); err != nil {
+	if _, err := tx.Exec(q, realmID, prefixID); err != nil {
 		errorJSON(w, err)
 		return
 	}
@@ -290,4 +304,57 @@ func (s *server) deletePrefix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serveJSON(w, struct{}{})
+}
+
+// Detach a prefix from the prefix tree, i.e. reparent its children.
+func (s *server) detachPrefix(tx *sql.Tx, realmID, prefixID int64) error {
+	q := `SELECT parent_id FROM prefixes WHERE realm_id=$1 AND prefix_id=$2`
+	var parentID *int64
+	if err := tx.QueryRow(q, realmID, prefixID).Scan(&parentID); err != nil {
+		return err
+	}
+
+	q = `UPDATE prefixes SET parent_id=$1 WHERE realm_id=$2 AND parent_id=$3`
+	if _, err := tx.Exec(q, parentID, realmID, prefixID); err != nil {
+		return err
+	}
+
+	q = `UPDATE prefixes SET parent_id=NULL where realm_id=$1 AND parent_id=$2`
+	if _, err := tx.Exec(q, realmID, prefixID); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Attach a prefix to the prefix tree, reparenting other prefixes if needed.
+func (s *server) attachPrefix(tx *sql.Tx, realmID, prefixID int64, prefix string) error {
+	var parentID *int64
+	q := `SELECT prefix_id FROM prefixes WHERE realm_id=$1 AND prefixIsInside($2, prefix) ORDER BY prefixLen(prefix) DESC LIMIT 1`
+	if err := tx.QueryRow(q, realmID, prefix).Scan(&parentID); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	if parentID == nil {
+		q = `UPDATE prefixes SET parent_id=NULL WHERE realm_id=$1 AND prefix_id=$2`
+		if _, err := tx.Exec(q, realmID, prefixID); err != nil {
+			return err
+		}
+
+		q = `UPDATE prefixes SET parent_id=$1 WHERE realm_id=$2 AND parent_id IS NULL AND prefixIsInside(prefix, $3)`
+		if _, err := tx.Exec(q, prefixID, realmID, prefix); err != nil {
+			return err
+		}
+	} else {
+		q = `UPDATE prefixes SET parent_id=$1 WHERE realm_id=$2 AND prefix_id=$3`
+		if _, err := tx.Exec(q, *parentID, realmID, prefixID); err != nil {
+			return err
+		}
+
+		q = `UPDATE prefixes SET parent_id=$1 WHERE realm_id=$2 AND parent_id=$3 AND prefixIsInside(prefix, $4)`
+		if _, err := tx.Exec(q, prefixID, realmID, *parentID, prefix); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -34,6 +34,9 @@
        });
        $("#deleteForm").submit(function(event) {
          event.preventDefault();
+         if ($("#submitDelete").hasClass("disabled")) {
+           return;
+         }
          $("#submitDelete").addClass("disabled");
          $.ajax({
            type: 'DELETE',

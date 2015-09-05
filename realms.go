@@ -41,6 +41,18 @@ func (s *server) listRealms() (ret []*Realm, err error) {
 	return ret, nil
 }
 
+func (s *server) realmExists(realmID int64) error {
+	q := `SELECT COUNT(*) FROM realms where realm_id=$1`
+	var n int64
+	if err := s.db.QueryRow(q, realmID).Scan(&n); err != nil {
+		return err
+	}
+	if n != 1 {
+		return errors.New("realm doesn't exist")
+	}
+	return nil
+}
+
 func (s *server) createRealm(w http.ResponseWriter, r *http.Request) {
 	var realm Realm
 	var b []byte
