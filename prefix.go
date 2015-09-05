@@ -119,7 +119,6 @@ func markDepth(pt []*PrefixTree, depth int64) {
 	sort.Sort(prefixTreeSorter(pt))
 	for _, p := range pt {
 		p.Depth = depth
-		fmt.Println(p.Prefix, p.Depth)
 		markDepth(p.Children, depth+1)
 	}
 }
@@ -220,7 +219,6 @@ func (s *server) editPrefix(w http.ResponseWriter, r *http.Request) {
 	}
 
 	changePrefix := pfx.Prefix != nil && currentPrefix != pfx.Prefix.String()
-	fmt.Println(changePrefix)
 	if changePrefix {
 		if err := s.detachPrefix(tx, realmID, prefixID); err != nil {
 			errorJSON(w, err)
