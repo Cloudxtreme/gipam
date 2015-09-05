@@ -1,0 +1,68 @@
+<div class="row">
+  <div class="col-sm-7">
+    <p id="error" class="alert alert-danger" style="display: none"></p>
+    <form class="form-horizontal" id="create">
+      <div class="form-group">
+        <label for="prefix" class="col-sm-2 control-label">Prefix</label>
+        <div class="col-sm-10">
+          <input type="text" class="form-control" id="prefix" autofocus/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="desc" class="col-sm-2 control-label">Description</label>
+        <div class="col-sm-10">
+          <textarea class="form-control" id="desc" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="col-sm-offset-2 col-sm-10">
+          <button type="submit" class="btn btn-default">Create</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="col-sm-5">
+    <div class="panel panel-info">
+      <div class="panel-heading">What's a prefix?</div>
+      <div class="panel-body">
+        <p>
+          A prefix is a container for IP addresses.
+        </p>
+        <p>
+          They can reflect a physical reality (e.g. a LAN subnet), or
+          they can just be an administrative abstraction (e.g. a
+          container for all your point-to-point link addresses).
+        </p>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+   $(document).ready(function() {
+     $("#create").submit(function(event) {
+       event.preventDefault();
+       $("#create button").addClass("disabled");
+       $.ajax({
+         type: 'POST',
+         url: '/api/realms/{{.}}/prefixes',
+         data: JSON.stringify({
+           prefix: $("#prefix").val(),
+           description: $("#desc").val(),
+         }),
+         contentType: "application/json",
+         dataType: "json",
+       }).done(function(data) {
+         $("#error").css("display", "none");
+         window.location.replace("./"+data.id);
+       }).fail(function(err) {
+         $("#error").css("display", "block");
+         $("#error").html(err.responseJSON.error);
+       }).always(function() {
+         $("#create button").removeClass("disabled");
+       });
+     })
+   });
+  </script>
+</div>
+

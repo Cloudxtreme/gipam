@@ -8,41 +8,59 @@ import (
 // Prefixes
 
 type Prefix struct {
-	db          *sql.DB
-	realm       string
+	realm       *Realm
+	Id          int64
 	Prefix      *net.IPNet
 	Description string
 }
 
-func (p *Prefix) Create() error {
+func (r *Realm) Prefix(prefix *net.IPNet) (*Prefix, error) {
+	q := `SELECT prefix_id, description FROM prefixes WHERE realm_id=$1 AND prefix=$2`
+	var id int64
+	var desc string
+	if err := r.db.QueryRow(q, r.Id, prefix.String()).Scan(&id, &desc); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	return &Prefix{
+		realm:       r,
+		Id:          id,
+		Prefix:      prefix,
+		Description: desc,
+	}, nil
+}
+
+func (r *Realm) CreatePrefix(prefix *net.IPNet, description string) (*Prefix, error) {
 	tx, err := p.db.Begin()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 
 	var parentId *int64
-	q := `SELECT prefix_id FROM prefixes INNER JOIN realms USING (realm_id) WHERE realms.name = $1 AND prefixIsInside($2, prefix) ORDER BY prefixLen(prefix) DESC LIMIT 1`
-	err = tx.QueryRow(q, p.realm, p.Prefix.String()).Scan(&parentId)
+	q := `SELECT prefix_id FROM prefixes WHERE realm_id=$1 AND prefixIsInside($2, prefix) ORDER BY prefixLen(prefix) DESC LIMIT 1`
+	err = tx.QueryRow(q, p.Id, prefix.String()).Scan(&parentId)
 	if err != nil && err != sql.ErrNoRows {
-		return err
+		return nil, err
 	}
 
 	q = `
 INSERT INTO prefixes (realm_id, parent_id, prefix, description)
-VALUES ((SELECT realm_id FROM realms WHERE name = $1), $2, $3, $4)`
-	_, err = tx.Exec(q, p.realm, parentId, p.Prefix.String(), p.Description)
+VALUES ($1, $2, $3, $4)`
+	res, err = tx.Exec(q, r.Id, parentId, prefix.String(), description)
 	if err != nil {
 		if errIsAlreadyExists(err) {
-			return ErrAlreadyExists
+			return nil, ErrAlreadyExists
 		}
-		return err
+		return nil, err
 	}
 
-	var realmId, prefixId int64
-	q = `SELECT realm_id, prefix_id FROM prefixes INNER JOIN realms USING (realm_id) WHERE name = $1 AND prefix = $2`
-	if err = tx.QueryRow(q, p.realm, p.Prefix.String()).Scan(&realmId, &prefixId); err != nil {
-		return err
+	prefixId, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
 	}
 
 	q = `
@@ -50,19 +68,26 @@ UPDATE prefixes SET parent_id = $1
 WHERE realm_id = $2
 AND prefixIsInside(prefix, $3)
 `
-	if _, err = tx.Exec(q, prefixId, realmId, p.Prefix.String()); err != nil {
-		return err
+	if _, err = tx.Exec(q, prefixId, r.Id, prefix.String()); err != nil {
+		return nil, err
 	}
 
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &Prefix{
+		realm:       r,
+		Id:          prefixId,
+		Prefix:      prefix,
+		Description: description,
+	}, nil
 }
 
 func (p *Prefix) Save() error {
 	q := `
-UPDATE prefixes
-SET description = $1
-WHERE prefix = $2 AND realm_id = (SELECT realm_id FROM realms WHERE name = $3)`
-	res, err := p.db.Exec(q, p.Description, p.Prefix.String(), p.realm)
+UPDATE prefixes SET description = $1 WHERE prefix = $2 AND realm_id = $3`
+	res, err := p.db.Exec(q, p.Description, p.Prefix.String(), p.realm.Id)
 	if err != nil {
 		return err
 	}

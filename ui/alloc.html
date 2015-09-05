@@ -1,7 +1,0 @@
-<ul>
-  <li ng-repeat="alloc in allocs">
-    {{alloc.Net}} ({{alloc.Name}})
-    <button type="button" class="close" style="float: none" ng-click="dostuff()">&times;</button>
-    <ipblocks allocs="alloc.Children" delete="delete(alloc)"></ipblocks>
-  </li>
-</ul>

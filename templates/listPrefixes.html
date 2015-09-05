@@ -1,0 +1,240 @@
+{{define "Prefix"}}
+<tr>
+  <td class="col-sm-3" style="padding-left: calc({{.Depth}} * 1.5em)">
+    {{.Prefix.Prefix}}
+    <div class="dropdown" style="display: inline">
+      <button class="btn btn-default btn-xs dropdown-toggle" style="background-image: none; border: 0; box-shadow: none" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+        <span class="glyphicon glyphicon-cog glyphicon-smaller" />
+      </button>
+      <ul class="dropdown-menu">
+        <li><a data-toggle="modal" data-target="#createOrEdit" data-prefix="{{.Prefix.Prefix}}" data-prefix-id="{{.Id}}" data-prefix-desc="{{.Description}}">Edit</a></li>
+        <li><a data-toggle="modal" data-target="#delete" data-prefix="{{.Prefix.Prefix}}" data-prefix-id="{{.Id}}">Delete</a></li>
+      </ul>
+    </div>
+    {{if (subPrefixes .Prefix.Prefix)}}
+    <div class="dropdown" style="display: inline">
+      <button class="btn btn-default btn-xs dropdown-toggle" style="background-image: none; border: 0; box-shadow: none" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+        <span class="glyphicon glyphicon-plus glyphicon-smaller" />
+      </button>
+      <ul class="dropdown-menu">
+        <li class="dropdown-header">Allocate a...</li>
+        {{range (subPrefixes .Prefix.Prefix)}}
+        <li><a href="#">/{{.}}</a></li>
+        {{end}}
+      </ul>
+    </div>
+    {{end}}
+  </td>
+  <td class="col-sm-9">{{.Description}}</td>
+</tr>
+{{range .Children}}
+{{template "Prefix" .}}
+{{end}}
+{{end}}
+
+<table class="table">
+  {{range .Prefixes}}
+  {{template "Prefix" .}}
+  {{end}}
+</table>
+<div class="row">
+  <div class="col-sm-4 col-sm-offset-4 text-center">
+    {{if not .Prefixes}}
+    <p><i>This realm has no prefixes yet. Want to fix that?</i></p>
+    {{end}}
+    <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#createOrEdit">
+      New Prefix
+    </button>
+    <!-- <a href="/realm/{{.RealmID}}/prefixes/create" class="btn btn-primary">New Prefix</a> -->
+  </div>
+</div>
+
+<!-- Prefix creator -->
+<div class="modal fade" id="createOrEdit" tabindex="-1" role="dialog" aria-labelledby="createOrEditTitle">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        <h4 class="modal-title" id="createOrEditTitle">New Prefix</h4>
+      </div>
+      <div class="modal-body">
+        
+        <div class="row">
+          <div class="col-sm-7">
+            <p id="error" class="alert alert-danger" style="display: none"></p>
+            <form class="form-horizontal">
+              <input id="prefixID" type="hidden" value=""/>
+              <div class="form-group">
+                <label for="prefix" class="col-sm-2 control-label">Prefix</label>
+                <div class="col-sm-10">
+                  <input type="text" class="form-control" id="prefix" tabindex="1"/>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="desc" class="col-sm-2 control-label">Description</label>
+                <div class="col-sm-10">
+                  <textarea class="form-control" id="desc" rows="3" tabindex="2"></textarea>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <div class="col-sm-5">
+            <div class="panel panel-info">
+              <div class="panel-heading">What's a prefix?</div>
+              <div class="panel-body">
+                <p>
+                  A prefix is a container for IP addresses.
+                </p>
+                <p>
+                  They can reflect a physical reality (e.g. a LAN subnet), or
+                  they can just be an administrative abstraction (e.g. a
+                  container for all your point-to-point link addresses).
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" tabindex="5" data-dismiss="modal">Cancel</button>
+          <button id="submitCreate" type="button" tabindex="3" class="btn btn-primary">Create</button>
+          <button id="submitEdit" type="button" tabindex="4" class="btn btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- Prefix deleter -->
+<div class="modal fade" id="delete" tabindex="-1" role="dialog" aria-labelledby="deleteTitle">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        <h4 class="modal-title" id="deleteTitle">Delete Prefix</h4>
+      </div>
+      <div class="modal-body">
+        
+        <p>Are you sure you want to delete <b id="prefixToDelete"></b>?</p>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" data-dismiss="modal">No</button>
+          <button id="submitDelete" type="button" class="btn btn-warning">Yes, keep children</button>
+          <button id="submitRecursiveDelete" type="button" class="btn btn-danger">Yes, also delete children</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+ $(document).ready(function() {
+   // Create/Update
+   $("#createOrEdit").on('show.bs.modal', function(event) {
+     var trigger = $(event.relatedTarget);
+     var pfxId = trigger.data('prefix-id');
+     var pfx = trigger.data('prefix');
+     var pfxDesc = trigger.data('prefix-desc');
+     var modal = $(this);
+     if (pfxId != null) {
+       modal.find("#createOrEditTitle").html("Edit " + pfx);
+       modal.find("#prefixID").val(pfxId);
+       modal.find("#prefix").val(pfx).prop('disabled', true);
+       modal.find("#desc").val(pfxDesc);
+       modal.find("#submitCreate").css("display", "none");
+       modal.find("#submitEdit").css("display", "inline");
+     } else {
+       modal.find("#createOrEditTitle").html("Create Prefix");
+       modal.find("#prefix").val("").prop('disabled', false);
+       modal.find("#desc").val("");
+       modal.find("#submitCreate").css("display", "inline");
+       modal.find("#submitEdit").css("display", "none");
+     }
+   });
+   $("#createOrEdit").on('shown.bs.modal', function() {
+     $("#prefix").focus();
+   });
+
+   $("#submitCreate").click(function() {
+     $("#submitCreate").addClass("disabled");
+     $.ajax({
+       type: 'POST',
+       url: '/api/realms/{{.RealmID}}/prefixes',
+       data: JSON.stringify({
+         prefix: $("#prefix").val(),
+         description: $("#desc").val(),
+       }),
+       contentType: "application/json",
+       dataType: "json",
+     }).done(function(data) {
+       window.location.reload(true);
+     }).fail(function(err) {
+       $("#error").css("display", "block");
+       $("#error").html(err.responseJSON.error);
+       $("#submitCreate").removeClass("disabled");
+     });
+   });
+
+   $("#submitEdit").click(function() {
+     $("#submitEdit").addClass("disabled");
+     $.ajax({
+       type: 'PUT',
+       url: '/api/realms/{{.RealmID}}/prefixes/' + $("#prefixID").val(),
+       data: JSON.stringify({
+         description: $("#desc").val(),
+       }),
+       contentType: "application/json",
+       dataType: "json",
+     }).done(function(data) {
+       window.location.reload(true);
+     }).fail(function(err) {
+       $("#error").css("display", "block");
+       $("#error").html(err.responseJSON.error);
+       $("#submitCreate").removeClass("disabled");
+     });
+   });
+
+   // Deletion
+   $("#delete").on('show.bs.modal', function(event) {
+     var trigger = $(event.relatedTarget);
+     var pfxId = trigger.data('prefix-id');
+     var pfx = trigger.data('prefix');
+     var modal = $(this);
+     modal.find("#prefixToDelete").html(pfx);
+     // Borrow createOrEdit's prefix ID slot - naughty!
+     $("#prefixID").val(pfxId);
+   });
+
+   $("#submitDelete").click(function() {
+     $("#submitDelete").addClass("disabled");
+     $("#submitRecursiveDelete").addClass("disabled");
+     $.ajax({
+       type: 'DELETE',
+       url: '/api/realms/{{.RealmID}}/prefixes/' + $("#prefixID").val(),
+       contentType: "application/json",
+       dataType: "json",
+     }).done(function(data) {
+       window.location.reload(true);
+     }).fail(function(err) {
+       alert("Delete failed: " + err.responseJSON.error);
+       window.location.reload(true);
+     });
+   });
+
+    $("#submitRecursiveDelete").click(function() {
+     $("#submitDelete").addClass("disabled");
+     $("#submitRecursiveDelete").addClass("disabled");
+     $.ajax({
+       type: 'DELETE',
+       url: '/api/realms/{{.RealmID}}/prefixes/' + $("#prefixID").val() + '?recursive',
+       contentType: "application/json",
+       dataType: "json",
+     }).done(function(data) {
+       window.location.reload(true);
+     }).fail(function(err) {
+       alert("Delete failed: " + err.responseJSON.error);
+       window.location.reload(true);
+     });
+   });
+});
+</script>

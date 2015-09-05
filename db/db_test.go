@@ -2,7 +2,6 @@ package db
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"math/rand"
 	"net"
@@ -523,7 +522,7 @@ func BenchmarkMatches(b *testing.B) {
 
 // This benchmark is mostly useful for very manual inspection and
 // debugging, so it's off by default.
-func dontBenchmarkInsertions(b *testing.B) {
+func BenchmarkInsertions(b *testing.B) {
 	var prefixes []*net.IPNet
 	for _, l := range []int{32, 24, 16, 8} {
 		for n := 0; n < 1000; n++ {
@@ -538,7 +537,6 @@ func dontBenchmarkInsertions(b *testing.B) {
 
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
-		fmt.Println(n)
 		db, err := New(":memory:")
 		if err != nil {
 			b.Fatal("Cannot create in-memory DB:", err)

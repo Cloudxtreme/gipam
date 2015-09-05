@@ -38,13 +38,6 @@ func New(path string) (*DB, error) {
 	return &DB{db}, nil
 }
 
-func (db *DB) Realm(name string) *Realm {
-	return &Realm{
-		db:   db.db,
-		Name: name,
-	}
-}
-
 func (db *DB) Close() error {
 	return db.db.Close()
 }

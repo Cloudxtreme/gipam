@@ -1,265 +1,141 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net"
+	"io/ioutil"
 	"net/http"
-	"strings"
+	"os"
 
-	db "github.com/danderson/gipam/database"
-	"github.com/danderson/gipam/export/bind9"
+	"github.com/gorilla/mux"
 )
 
-const (
-	subnetPath = "/api/subnet/"
-	hostPath   = "/api/host/"
-	bind9Path  = "/api/export/bind9/"
-)
+func runServer(addr string, dbPath string) error {
+	db, err := NewDB(dbPath)
+	if err != nil {
+		return err
+	}
 
-func runServer(addr string, db *db.DB) {
-	s := &server{db}
-	http.HandleFunc(subnetPath, s.Subnet)
-	http.HandleFunc(hostPath, s.Host)
-	http.HandleFunc(bind9Path, s.Bind9)
-	http.Handle("/", http.FileServer(http.Dir("ui")))
-	http.ListenAndServe(addr, nil)
+	s := &server{
+		dbPath: dbPath,
+		db:     db,
+		mux:    mux.NewRouter(),
+	}
+
+	s.registerAPI()
+	s.mux.Path("/realm/create").HandlerFunc(s.createRealmUI)
+	s.mux.Path("/realm/{RealmID:[0-9]+}/delete").HandlerFunc(s.deleteRealmUI)
+
+	s.mux.Path("/realm/{RealmID:[0-9]+}/prefixes").HandlerFunc(s.listPrefixesUI)
+	s.mux.Path("/realm/{RealmID:[0-9]+}/prefixes/{PrefixID:[0-9]+}").HandlerFunc(s.listPrefixesUI)
+
+	s.mux.Path("/gipam.css").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := ioutil.ReadFile("gipam.css")
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/css")
+		w.Write(b)
+	})
+
+	s.mux.Path("/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		realms, err := s.listRealms()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if len(realms) == 0 {
+			// No realms - we probably want one.
+			http.Redirect(w, r, "/realm/create", 302)
+			return
+		} else {
+			http.Redirect(w, r, fmt.Sprintf("/realm/%d/prefixes", realms[0].Id), 302)
+		}
+		w.Write([]byte("Placeholder handler"))
+	})
+
+	s.mux.Path("/resetDB").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.db.Close()
+		if s.dbPath != ":memory:" {
+			if err := os.Remove(s.dbPath); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to delete DB: %s. I will probably crash soon.", err), 500)
+				return
+			}
+		}
+		db, err := NewDB(dbPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to recreate DB: %s. I will probably crash soon.", err), 500)
+			return
+		}
+		s.db = db
+		http.Redirect(w, r, "/realm/create", 302)
+	})
+
+	return http.ListenAndServe(addr, s.mux)
 }
 
 type server struct {
-	db *db.DB
+	dbPath string
+	db     *sql.DB
+	mux    *mux.Router
 }
 
-func writeJSON(w http.ResponseWriter, obj interface{}) {
-	f, err := json.Marshal(obj)
+type api struct {
+	db *sql.DB
+}
+
+func (s *server) registerAPI() {
+	api := s.mux.PathPrefix("/api").Subrouter()
+
+	api.Path("/realms").Methods("POST").HandlerFunc(s.createRealm)
+	api.Path("/realms/{RealmID:[0-9]+}").Methods("PUT").HandlerFunc(s.editRealm)
+	api.Path("/realms/{RealmID:[0-9]+}").Methods("DELETE").HandlerFunc(s.deleteRealm)
+
+	api.Path("/realms/{RealmID:[0-9]+}/prefixes").Methods("POST").HandlerFunc(s.createPrefix)
+	api.Path("/realms/{RealmID:[0-9]+}/prefixes/{PrefixID:[0-9]+}").Methods("PUT").HandlerFunc(s.editPrefix)
+	api.Path("/realms/{RealmID:[0-9]+}/prefixes/{PrefixID:[0-9]+}").Methods("DELETE").HandlerFunc(s.deletePrefix)
+
+	api.Path("/realms/{RealmID:[0-9]+}/hosts").Methods("POST").HandlerFunc(s.createHost)
+	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}").Methods("PUT").HandlerFunc(s.editHost)
+	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}").Methods("DELETE").HandlerFunc(s.deleteHost)
+
+	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}/addresses").Methods("POST").HandlerFunc(s.createHostAddr)
+	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}/addresses/{AddrID:[0-9]+}").Methods("PUT").HandlerFunc(s.editHostAddr)
+	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}/addresses/{AddrID:[0-9]+}").Methods("DELETE").HandlerFunc(s.deleteHostAddr)
+}
+
+func marshalJSON(val interface{}) ([]byte, error) {
+	if *debug {
+		return json.MarshalIndent(val, "", "  ")
+	}
+	return json.Marshal(val)
+}
+
+func serveJSON(w http.ResponseWriter, val interface{}) {
+	b, err := marshalJSON(val)
 	if err != nil {
-		log.Printf("Failed to convert %#v to json: %s", obj, err)
-		http.Error(w, "Error while converting to JSON", 500)
+		errorJSON(w, err)
 		return
 	}
-	w.Write(f)
+	w.Write(b)
 }
 
-func (s *server) Subnet(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		cidr := strings.TrimPrefix(r.URL.Path, subnetPath)
-		if cidr == "" {
-			writeJSON(w, s.db.Subnets)
-		} else {
-			_, net, err := net.ParseCIDR(cidr)
-			if err != nil {
-				http.Error(w, "Malformed CIDR prefix", 400)
-				return
-			}
-			subnet := s.db.Subnet(net, true)
-			if subnet == nil {
-				http.Error(w, fmt.Sprintf("Subnet %s does not exist", net), 404)
-				return
-			}
-			writeJSON(w, subnet)
-		}
-	case "POST":
-		if strings.TrimPrefix(r.URL.Path, subnetPath) != "" {
-			http.Error(w, fmt.Sprintf("Can only POST new subnets to %s", subnetPath), 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Net   *db.IPNet
-			Attrs map[string]string
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
-		if err := s.db.AddSubnet(req.Name, (*net.IPNet)(req.Net), req.Attrs); err != nil {
-			http.Error(w, fmt.Sprintf("Allocation of %s failed: %s", req.Net, err), 500)
-			return
-		}
-		if err := s.db.Save(); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
-
-		writeJSON(w, s.db.Subnet((*net.IPNet)(req.Net), true))
-	case "PUT":
-		cidr := strings.TrimPrefix(r.URL.Path, subnetPath)
-		if cidr == "" {
-			http.Error(w, "Can only PUT to edit a specific prefix", 400)
-			return
-		}
-		_, net, err := net.ParseCIDR(cidr)
-		if err != nil {
-			http.Error(w, "Malformed CIDR prefix", 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Attrs map[string]string
-		}
-		if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
-
-		subnet := s.db.Subnet(net, true)
-		if subnet == nil {
-			http.Error(w, "Subnet %s does not exist", 404)
-			return
-		}
-		subnet.Name = req.Name
-		subnet.Attrs = req.Attrs
-
-		if err := s.db.Save(); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
-
-		writeJSON(w, subnet)
-	case "DELETE":
-		cidr := strings.TrimPrefix(r.URL.Path, subnetPath)
-		if cidr == "" {
-			http.Error(w, "Can only DELETE to delete a specific prefix", 400)
-			return
-		}
-		_, net, err := net.ParseCIDR(cidr)
-		if err != nil {
-			http.Error(w, "Malformed CIDR prefix", 400)
-			return
-		}
-		reparent := r.URL.Query().Get("reparent") != ""
-
-		subnet := s.db.Subnet(net, true)
-		if subnet == nil {
-			http.Error(w, "Subnet %s does not exist", 404)
-			return
-		}
-
-		subnet.Delete(!reparent)
-
-		if err := s.db.Save(); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
+func errorJSON(w http.ResponseWriter, err error) {
+	ret := struct {
+		Error string `json:"error"`
+	}{
+		err.Error(),
 	}
-}
 
-func (s *server) Host(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		addr := strings.TrimPrefix(r.URL.Path, hostPath)
-		if addr == "" {
-			writeJSON(w, s.db.Hosts)
-		} else {
-			ip := net.ParseIP(addr)
-			if ip == nil {
-				http.Error(w, "Malformed IP address", 400)
-				return
-			}
-			host := s.db.Host(ip)
-			if host == nil {
-				http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
-				return
-			}
-			writeJSON(w, host)
-		}
-	case "POST":
-		if strings.TrimPrefix(r.URL.Path, hostPath) != "" {
-			http.Error(w, fmt.Sprintf("Can only POST new hosts to %s", hostPath), 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Addrs []net.IP
-			Attrs map[string]string
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
-		if err := s.db.AddHost(req.Name, req.Addrs, req.Attrs); err != nil {
-			http.Error(w, fmt.Sprintf("Adding host %s failed: %s", req.Name, err), 500)
-			return
-		}
-		if err := s.db.Save(); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 
-		writeJSON(w, s.db.Host(req.Addrs[0]))
-	case "PUT":
-		addr := strings.TrimPrefix(r.URL.Path, hostPath)
-		if addr == "" {
-			http.Error(w, "Can only PUT to edit a specific host (by IP address)", 400)
-			return
-		}
-		ip := net.ParseIP(addr)
-		if ip == nil {
-			http.Error(w, "Malformed IP address", 400)
-			return
-		}
-		var req struct {
-			Name  string
-			Addrs []net.IP
-			Attrs map[string]string
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON value in body", 400)
-			return
-		}
-
-		host := s.db.Host(ip)
-		if host == nil {
-			http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
-			return
-		}
-
-		// TODO: needs atomicity here, i.e. a way to roll back the partial edit.
-		host.Delete()
-		if err := s.db.AddHost(req.Name, req.Addrs, req.Attrs); err != nil {
-			http.Error(w, fmt.Sprintf("Editing host %s failed: %s", host.Name, err), 500)
-		}
-		if err := s.db.Save(); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
-
-		writeJSON(w, host)
-	case "DELETE":
-		addr := strings.TrimPrefix(r.URL.Path, hostPath)
-		if addr == "" {
-			http.Error(w, "Can only DELETE to delete a specific host by IP", 400)
-			return
-		}
-		ip := net.ParseIP(addr)
-		if ip == nil {
-			http.Error(w, "Malformed IP address", 400)
-			return
-		}
-
-		host := s.db.Host(ip)
-		if host == nil {
-			http.Error(w, fmt.Sprintf("Host with IP %s does not exist", ip), 404)
-			return
-		}
-
-		host.Delete()
-
-		if err := s.db.Save(); err != nil {
-			http.Error(w, "Couldn't save change", 500)
-			return
-		}
-	}
-}
-
-func (s *server) Bind9(w http.ResponseWriter, r *http.Request) {
-	domain := strings.TrimPrefix(r.URL.Path, bind9Path)
-	zone, err := bind9.ExportZone(s.db, domain, false)
+	b, err := marshalJSON(ret)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error exporting zone: %s", err), 500)
+		w.Write([]byte(`{error: "got an error while marhsalling error"}`))
 		return
 	}
-	w.Write([]byte(zone))
+	w.Write(b)
 }

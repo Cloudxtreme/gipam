@@ -1,0 +1,50 @@
+<div class="row">
+  <div class="col-sm-8 col-sm-offset-2" style="text-align: center">
+    <p class="danger-bar alert alert-danger h2"><b>DANGER DANGER DANGER</b></p>
+    <div class="panel panel-default">
+      <div class="panel-body" style="text-align: center">
+        <p>
+          Executing this deletion will destroy all data in realm <b>{{.Name}}</b>. That
+          includes prefixes, hosts, domains and attributes. This
+          operation cannot be undone!
+        </p>
+        
+        <form id="deleteForm">
+          <div id="confirmBox" class="form-group has-error has-feedback">
+            <label for="confirmDelete">Enter "Yes, I want to destroy realm {{.Id}}" to proceed:</label>
+            <input type="text" class="form-control" id="confirmDelete" autocomplete="off" autofocus>
+            <span id="confirmCross" class="glyphicon glyphicon-remove form-control-feedback" aria-hidden="true"></span>
+          </div>
+          <button id="submitDelete" type="submit" class="btn btn-danger disabled">Delete realm</button>
+        </form>
+      </div>
+    </div>
+    <p class="danger-bar alert alert-danger h2"><b>DANGER DANGER DANGER</b></p>
+    <script>
+     $(document).ready(function(){
+       var confirm = $("#confirmDelete");
+       confirm.keyup(function() {
+         if (confirm.val() === "Yes, I want to destroy realm {{.Id}}") {
+           $("#confirmBox").removeClass("has-error");
+           $("#confirmDelete").prop("disabled", true);
+           $("#confirmCross").css("display", "none");
+           $("#submitDelete").removeClass("disabled btn-danger").addClass("btn-success");
+           $(".danger-bar").removeClass("alert-danger").addClass("alert-success");
+         }
+       });
+       $("#deleteForm").submit(function(event) {
+         event.preventDefault();
+         $("#submitDelete").addClass("disabled");
+         $.ajax({
+           type: 'DELETE',
+           url: '/api/realms/'+{{.Id}},
+         }).done(function(data) {
+           window.location.replace("/");
+         }).fail(function(err) {
+           alert('Delete failed: ' + err.responseJSON.error);
+         });
+       });
+     });
+    </script>
+  </div>
+</div>

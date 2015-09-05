@@ -1,0 +1,69 @@
+<div class="row">
+  <div class="col-sm-7">
+    <p id="error" class="alert alert-danger" style="display: none"></p>
+    <form class="form-horizontal" id="createRealm">
+      <div class="form-group">
+        <label for="realmName" class="col-sm-2 control-label">Name</label>
+        <div class="col-sm-10">
+          <input type="text" class="form-control" id="realmName" autofocus/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="realmDesc" class="col-sm-2 control-label">Description</label>
+        <div class="col-sm-10">
+          <textarea class="form-control" id="realmDesc" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="col-sm-offset-2 col-sm-10">
+          <button type="submit" class="btn btn-default">Create</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="col-sm-5">
+    <div class="panel panel-info">
+      <div class="panel-heading">What's a realm?</div>
+      <div class="panel-body">
+        <p>
+          A realm is a namespace in which all prefixes, hostnames and
+          domains are unique. Some IPAMs call these VRFs.
+        </p>
+        <p>
+          For simple deployments, a single "Prod" realm should be more
+          than enough. You can always add more later, e.g. a "Lab"
+          realm for experiments, or an isolated VRF for customer
+          routing.
+        </p>
+      </div>
+    </div>
+  </div>
+  <script>
+   $(document).ready(function() {
+     $("#createRealm").submit(function(event) {
+       event.preventDefault();
+       $("#createRealm button").addClass("disabled");
+       $.ajax({
+         type: 'POST',
+         url: '/api/realms',
+         data: JSON.stringify({
+           name: $("#realmName").val(),
+           description: $("#realmDesc").val(),
+         }),
+         contentType: "application/json",
+         dataType: "json",
+       }).done(function(data) {
+         $("#error").css("display", "none");
+         window.location.replace("/realm/"+data.realm.id+"/prefixes");
+       }).fail(function(err) {
+         $("#error").css("display", "block");
+         $("#error").html(err.responseJSON.error);
+       }).always(function() {
+         $("#createRealm button").removeClass("disabled");
+       });
+     })
+   });
+  </script>
+</div>
+
