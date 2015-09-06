@@ -1,0 +1,182 @@
+{{if .Hosts}}
+<table class="table">
+  {{range .Hosts}}
+  {{range $idx, $addr := .Addrs}}
+  <tr>
+    {{if eq $idx 0}}
+    <td rowspan="{{len .Addrs}}">{{.Hostname}}</td>
+    <td rowspan="{{len .Addrs}}">{{.Description}}</td>
+    {{end}}
+    <td>{{$addr}}</td>
+  </tr>
+  {{end}}
+  {{end}}
+</table>
+{{end}}
+<div class="row">
+  <div class="col-sm-4 col-sm-offset-4 text-center">
+    {{if not .Hosts}}
+    <p><i>This realm has no hosts yet. Want to fix that?</i></p>
+    {{end}}
+    <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#createOrEditWin">
+      New Host
+    </button>
+  </div>
+</div>
+
+<div id="addrTemplate" class="panel panel-default col-sm-12 gi-addr" style="display:none; padding: 0 5px">
+  <div class="panel-body" style="padding: 0">
+    <div class="text-right" style="margin: 5px 0">
+      <a><span class="glyphicon glyphicon-remove-circle" aria-hidden="true"/></a>
+    </div>
+    
+    <div class="form-group">
+      <label class="col-sm-2 control-label">Address</label>
+      <div class="col-sm-10">
+        <input type="text" class="form-control gi-address" />
+      </div>
+    </div>
+    
+    <div class="form-group">
+      <label class="col-sm-2 control-label">Description</label>
+      <div class="col-sm-10">
+        <input type="text" class="form-control gi-desc" />
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Host creator -->
+<div class="modal" id="createOrEditWin" tabindex="-1" role="dialog" aria-labelledby="createOrEditTitle">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        <h4 class="modal-title gi-title" id="createOrEditTitle">New Prefix</h4>
+      </div>
+      <div class="modal-body">
+        
+        <div class="row">
+          <div class="col-sm-7">
+            <p class="alert alert-danger gi-error" style="display: none"></p>
+            <form class="form-horizontal">
+              <input class="gi-host-id" type="hidden" value=""/>
+              <div class="form-group">
+                <label for="prefix" class="col-sm-2 control-label">Hostname</label>
+                <div class="col-sm-10">
+                  <input type="text" class="form-control gi-hostname" tabindex="1"/>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="desc" class="col-sm-2 control-label">Description</label>
+                <div class="col-sm-10">
+                  <textarea class="form-control gi-desc" rows="3" tabindex="2"></textarea>
+                </div>
+              </div>
+              <div class="gi-addresses"></div>
+            </form>
+          </div>
+
+          <div class="col-sm-5">
+            <div class="panel panel-info">
+              <div class="panel-heading">What's a host?</div>
+              <div class="panel-body">
+                <p>
+                  How do you not know what a host is, you idiot.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" tabindex="5" data-dismiss="modal">Cancel</button>
+          <button type="button" tabindex="3" class="btn btn-primary gi-btn">Create</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+ $(document).ready(function() {
+   // Create/Update
+   var createWin = $("#createOrEditWin");
+   var createParts = {
+     title: createWin.find(".gi-title"),
+     hostId: createWin.find(".gi-host-id"),
+     hostname: createWin.find(".gi-hostname"),
+     desc: createWin.find(".gi-desc"),
+     addresses: createWin.find(".gi-addresses"),
+     btn: createWin.find(".gi-btn"),
+     error: createWin.find(".gi-error"),
+   };
+
+   function addAddress(container) {
+     var newAddr = $("#addrTemplate").clone();
+     newAddr.css("display", "inline");
+     createParts.addresses.append(newAddr);
+   }
+   
+   createWin.on('show.bs.modal', function(event) {
+     var trigger = $(event.relatedTarget);
+     var info = {
+       id: trigger.data('host-id'),
+       hostname: trigger.data('hostname'),
+       desc: trigger.data('host-desc'),
+     };
+     if (info.id != null) {
+       createParts.title.html("Edit " + info.hostname);
+       createParts.hostId.val(info.id);
+       createParts.hostname.val(info.hostname);
+       createParts.desc.val(info.desc);
+       createParts.btn.html("Save");
+       createParts.addresses.html("");
+       addAddress(createParts.addresses);
+     } else {
+       createParts.title.html("Create Host");
+       createParts.hostId.val("");
+       createParts.hostname.val("");
+       createParts.desc.val("");
+       createParts.btn.html("Create");
+       createParts.addresses.html("");
+       addAddress(createParts.addresses);
+     }
+   });
+   createWin.on('shown.bs.modal', function() { createParts.hostname.focus(); });
+   createParts.btn.click(function() {
+     createParts.btn.addClass("disabled");
+     var data = {
+       hostname: createParts.hostname.val(),
+       description: createParts.desc.val(),
+       addresses: createParts.addresses.find(".gi-addr").map(function(i, e) {
+         return {
+           realm_id: {{.RealmID}}, // TODO: make configurable
+           address: e.find(".gi-address").val(),
+           description: e.find(".gi-desc").val(),
+         };
+       }).get(),
+     };
+     console.log(data);
+     var req = {
+       url: "/api/realms/{{.RealmID}}/hosts",
+       data: JSON.stringify(data),
+       contentType: "application/json",
+       dataType: "json",
+     };
+     if (createParts.hostId.val() == "") {
+       req.type = "POST";
+     } else {
+       req.type = "PUT";
+       req.url = req.url + "/" + createParts.hostId.val();
+     }
+     
+     $.ajax(req).done(function(data) {
+       window.location.reload(true);
+     }).fail(function(err) {
+       createParts.error.css("display", "block").html(err.responseJSON.error);
+       createParts.btn.removeClass("disabled");
+     });
+   });
+});
+</script>

@@ -112,10 +112,6 @@ func (s *server) registerAPI() {
 	api.Path("/realms/{RealmID:[0-9]+}/hosts").Methods("POST").HandlerFunc(s.createHost)
 	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}").Methods("PUT").HandlerFunc(s.editHost)
 	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}").Methods("DELETE").HandlerFunc(s.deleteHost)
-
-	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}/addresses").Methods("POST").HandlerFunc(s.createHostAddr)
-	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}/addresses/{AddrID:[0-9]+}").Methods("PUT").HandlerFunc(s.editHostAddr)
-	api.Path("/realms/{RealmID:[0-9]+}/hosts/{HostID:[0-9]+}/addresses/{AddrID:[0-9]+}").Methods("DELETE").HandlerFunc(s.deleteHostAddr)
 }
 
 func marshalJSON(val interface{}) ([]byte, error) {
