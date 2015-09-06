@@ -21,40 +21,26 @@ func hostID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(mux.Vars(r)["hostID"], 10, 64)
 }
 
-func (s *server) listHosts(w http.ResponseWriter, r *http.Request) {
-	realmID, err := realmID(r)
-	if err != nil {
-		errorJSON(w, err)
-		return
-	}
-
+func (s *server) listHosts(realmID int64) ([]*Host, error) {
 	q := `SELECT host_id, hostname, description FROM hosts WHERE realm_id=$1`
 	rows, err := s.db.Query(q, realmID)
 	if err != nil {
-		errorJSON(w, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
-	ret := struct {
-		Hosts []*Host `json:"hosts"`
-	}{
-		[]*Host{},
-	}
+	ret := []*Host{}
 	for rows.Next() {
 		var h Host
 		if err = rows.Scan(&h.Id, &h.Hostname, &h.Description); err != nil {
-			errorJSON(w, err)
-			return
+			return nil, err
 		}
-		ret.Hosts = append(ret.Hosts, &h)
+		ret = append(ret, &h)
 	}
 	if err = rows.Err(); err != nil {
-		errorJSON(w, err)
-		return
+		return nil, err
 	}
-
-	serveJSON(w, ret)
+	return ret, nil
 }
 
 func (s *server) createHost(w http.ResponseWriter, r *http.Request) {

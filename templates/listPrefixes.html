@@ -7,8 +7,8 @@
         <span class="glyphicon glyphicon-cog glyphicon-smaller" />
       </button>
       <ul class="dropdown-menu">
-        <li><a data-toggle="modal" data-target="#createOrEdit" data-prefix="{{.Prefix.Prefix}}" data-prefix-id="{{.Id}}" data-prefix-desc="{{.Description}}">Edit</a></li>
-        <li><a data-toggle="modal" data-target="#delete" data-prefix="{{.Prefix.Prefix}}" data-prefix-id="{{.Id}}">Delete</a></li>
+        <li><a data-toggle="modal" data-target="#createOrEditWin" data-prefix="{{.Prefix.Prefix}}" data-prefix-id="{{.Id}}" data-prefix-desc="{{.Description}}">Edit</a></li>
+        <li><a data-toggle="modal" data-target="#deleteWin" data-prefix="{{.Prefix.Prefix}}" data-prefix-id="{{.Id}}">Delete</a></li>
       </ul>
     </div>
     {{if (subPrefixes .Prefix.Prefix)}}
@@ -42,38 +42,37 @@
     {{if not .Prefixes}}
     <p><i>This realm has no prefixes yet. Want to fix that?</i></p>
     {{end}}
-    <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#createOrEdit">
+    <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#createOrEditWin">
       New Prefix
     </button>
-    <!-- <a href="/realm/{{.RealmID}}/prefixes/create" class="btn btn-primary">New Prefix</a> -->
   </div>
 </div>
 
 <!-- Prefix creator -->
-<div class="modal" id="createOrEdit" tabindex="-1" role="dialog" aria-labelledby="createOrEditTitle">
+<div class="modal" id="createOrEditWin" tabindex="-1" role="dialog" aria-labelledby="createOrEditTitle">
   <div class="modal-dialog modal-lg" role="document">
     <div class="modal-content">
       <div class="modal-header">
         <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
-        <h4 class="modal-title" id="createOrEditTitle">New Prefix</h4>
+        <h4 class="modal-title gi-title" id="createOrEditTitle">New Prefix</h4>
       </div>
       <div class="modal-body">
         
         <div class="row">
           <div class="col-sm-7">
-            <p id="error" class="alert alert-danger" style="display: none"></p>
+            <p class="alert alert-danger gi-error" style="display: none"></p>
             <form class="form-horizontal">
-              <input id="prefixID" type="hidden" value=""/>
+              <input class="gi-prefix-id" type="hidden" value=""/>
               <div class="form-group">
                 <label for="prefix" class="col-sm-2 control-label">Prefix</label>
                 <div class="col-sm-10">
-                  <input type="text" class="form-control" id="prefix" tabindex="1"/>
+                  <input type="text" class="form-control gi-prefix" tabindex="1"/>
                 </div>
               </div>
               <div class="form-group">
                 <label for="desc" class="col-sm-2 control-label">Description</label>
                 <div class="col-sm-10">
-                  <textarea class="form-control" id="desc" rows="3" tabindex="2"></textarea>
+                  <textarea class="form-control gi-desc" rows="3" tabindex="2"></textarea>
                 </div>
               </div>
             </form>
@@ -97,8 +96,7 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-default" tabindex="5" data-dismiss="modal">Cancel</button>
-          <button id="submitCreate" type="button" tabindex="3" class="btn btn-primary">Create</button>
-          <button id="submitEdit" type="button" tabindex="4" class="btn btn-primary">Save</button>
+          <button type="button" tabindex="3" class="btn btn-primary gi-btn">Create</button>
         </div>
       </div>
     </div>
@@ -107,20 +105,21 @@
 
 
 <!-- Prefix deleter -->
-<div class="modal" id="delete" tabindex="-1" role="dialog" aria-labelledby="deleteTitle">
+<div class="modal" id="deleteWin" tabindex="-1" role="dialog" aria-labelledby="deleteWinTitle">
   <div class="modal-dialog modal-lg" role="document">
     <div class="modal-content">
       <div class="modal-header">
         <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
-        <h4 class="modal-title" id="deleteTitle">Delete Prefix</h4>
+        <h4 class="modal-title" id="deleteWinTitle">Delete Prefix</h4>
       </div>
       <div class="modal-body">
         
-        <p>Are you sure you want to delete <b id="prefixToDelete"></b>?</p>
+        <input class="gi-prefix-id" type="hidden" value=""/>
+        <p>Are you sure you want to delete <b class="gi-prefix"></b>?</p>
         <div class="modal-footer">
           <button type="button" class="btn btn-default" data-dismiss="modal">No</button>
-          <button id="submitDelete" type="button" class="btn btn-warning">Yes, keep children</button>
-          <button id="submitRecursiveDelete" type="button" class="btn btn-danger">Yes, also delete children</button>
+          <button type="button" class="btn btn-warning gi-btn">Yes, keep children</button>
+          <button type="button" class="btn btn-danger gi-btn" data-recursive="true">Yes, also delete children</button>
         </div>
       </div>
     </div>
@@ -130,107 +129,94 @@
 <script>
  $(document).ready(function() {
    // Create/Update
-   $("#createOrEdit").on('show.bs.modal', function(event) {
+   var createWin = $("#createOrEditWin");
+   var createParts = {
+     title: createWin.find(".gi-title"),
+     prefixId: createWin.find(".gi-prefix-id"),
+     prefix: createWin.find(".gi-prefix"),
+     desc: createWin.find(".gi-desc"),
+     btn: createWin.find(".gi-btn"),
+     error: createWin.find(".gi-error"),
+   };
+
+   createWin.on('show.bs.modal', function(event) {
      var trigger = $(event.relatedTarget);
-     var pfxId = trigger.data('prefix-id');
-     var pfx = trigger.data('prefix');
-     var pfxDesc = trigger.data('prefix-desc');
-     var modal = $(this);
-     if (pfxId != null) {
-       modal.find("#createOrEditTitle").html("Edit " + pfx);
-       modal.find("#prefixID").val(pfxId);
-       modal.find("#prefix").val(pfx);
-       modal.find("#desc").val(pfxDesc);
-       modal.find("#submitCreate").css("display", "none");
-       modal.find("#submitEdit").css("display", "inline");
+     var info = {
+       id: trigger.data('prefix-id'),
+       prefix: trigger.data('prefix'),
+       desc: trigger.data('prefix-desc'),
+     };
+     if (info.id != null) {
+       createParts.title.html("Edit " + info.prefix);
+       createParts.prefixId.val(info.id);
+       createParts.prefix.val(info.prefix);
+       createParts.desc.val(info.desc);
+       createParts.btn.html("Save");
      } else {
-       modal.find("#createOrEditTitle").html("Create Prefix");
-       modal.find("#prefix").val("")
-       modal.find("#desc").val("");
-       modal.find("#submitCreate").css("display", "inline");
-       modal.find("#submitEdit").css("display", "none");
+       createParts.title.html("Create Prefix");
+       createParts.prefixId.val("");
+       createParts.prefix.val("");
+       createParts.desc.val("");
+       createParts.btn.html("Create");
      }
    });
-   $("#createOrEdit").on('shown.bs.modal', function() {
-     $("#prefix").focus();
-   });
-
-   $("#submitCreate").click(function() {
-     $("#submitCreate").addClass("disabled");
-     $.ajax({
-       type: 'POST',
-       url: '/api/realms/{{.RealmID}}/prefixes',
+   createWin.on('shown.bs.modal', function() { createParts.prefix.focus(); });
+   createParts.btn.click(function() {
+     createParts.btn.addClass("disabled");
+     var req = {
+       url: "/api/realms/{{.RealmID}}/prefixes",
        data: JSON.stringify({
-         prefix: $("#prefix").val(),
-         description: $("#desc").val(),
+         prefix: createParts.prefix.val(),
+         description: createParts.desc.val(),
        }),
        contentType: "application/json",
        dataType: "json",
-     }).done(function(data) {
+     };
+     if (createParts.prefixId.val() == "") {
+       req.type = "POST";
+     } else {
+       req.type = "PUT";
+       req.url = req.url + "/" + createParts.prefixId.val();
+     }
+     
+     $.ajax(req).done(function(data) {
        window.location.reload(true);
      }).fail(function(err) {
-       $("#error").css("display", "block");
-       $("#error").html(err.responseJSON.error);
-       $("#submitCreate").removeClass("disabled");
-     });
-   });
-
-   $("#submitEdit").click(function() {
-     $("#submitEdit").addClass("disabled");
-     $.ajax({
-       type: 'PUT',
-       url: '/api/realms/{{.RealmID}}/prefixes/' + $("#prefixID").val(),
-       data: JSON.stringify({
-         prefix: $("#prefix").val(),
-         description: $("#desc").val(),
-       }),
-       contentType: "application/json",
-       dataType: "json",
-     }).done(function(data) {
-       window.location.reload(true);
-     }).fail(function(err) {
-       $("#error").css("display", "block");
-       $("#error").html(err.responseJSON.error);
-       $("#submitCreate").removeClass("disabled");
+       createParts.error.css("display", "block").html(err.responseJSON.error);
+       createParts.btn.removeClass("disabled");
      });
    });
 
    // Deletion
-   $("#delete").on('show.bs.modal', function(event) {
+   var deleteWin = $("#deleteWin");
+   var deleteParts = {
+     prefixId: deleteWin.find(".gi-prefix-id"),
+     prefix: deleteWin.find(".gi-prefix"),
+     btn: deleteWin.find(".gi-btn"),
+   };
+
+   deleteWin.on('show.bs.modal', function(event) {
      var trigger = $(event.relatedTarget);
      var pfxId = trigger.data('prefix-id');
      var pfx = trigger.data('prefix');
-     var modal = $(this);
-     modal.find("#prefixToDelete").html(pfx);
-     // Borrow createOrEdit's prefix ID slot - naughty!
-     $("#prefixID").val(pfxId);
+     deleteParts.prefixId.val(pfxId)
+     deleteParts.prefix.html(pfx);
    });
 
-   $("#submitDelete").click(function() {
-     $("#submitDelete").addClass("disabled");
-     $("#submitRecursiveDelete").addClass("disabled");
-     $.ajax({
+   deleteParts.btn.click(function(event) {
+     var trigger = $(event.relatedTarget);
+     var recurse = trigger.data('recursive') != "";
+     deleteParts.btn.addClass("disabled");
+     var req = {
        type: 'DELETE',
-       url: '/api/realms/{{.RealmID}}/prefixes/' + $("#prefixID").val(),
+       url: '/api/realms/{{.RealmID}}/prefixes/' + deleteParts.prefixId.val(),
        contentType: "application/json",
        dataType: "json",
-     }).done(function(data) {
-       window.location.reload(true);
-     }).fail(function(err) {
-       alert("Delete failed: " + err.responseJSON.error);
-       window.location.reload(true);
-     });
-   });
-
-    $("#submitRecursiveDelete").click(function() {
-     $("#submitDelete").addClass("disabled");
-     $("#submitRecursiveDelete").addClass("disabled");
-     $.ajax({
-       type: 'DELETE',
-       url: '/api/realms/{{.RealmID}}/prefixes/' + $("#prefixID").val() + '?recursive',
-       contentType: "application/json",
-       dataType: "json",
-     }).done(function(data) {
+     };
+     if (trigger.data("recursive") != "") {
+       req.url = req.url + "?recursive";
+     }
+     $.ajax(req).done(function(data) {
        window.location.reload(true);
      }).fail(function(err) {
        alert("Delete failed: " + err.responseJSON.error);

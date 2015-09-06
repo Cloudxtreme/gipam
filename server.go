@@ -37,6 +37,8 @@ func runServer(addr string, dbPath string) error {
 	s.mux.Path("/realm/{RealmID:[0-9]+}/prefixes").HandlerFunc(s.listPrefixesUI)
 	s.mux.Path("/realm/{RealmID:[0-9]+}/prefixes/{PrefixID:[0-9]+}").HandlerFunc(s.listPrefixesUI)
 
+	s.mux.Path("/realm/{RealmID:[0-9]+}/hosts").HandlerFunc(s.listHostsUI)
+
 	s.mux.Path("/gipam.css").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := ioutil.ReadFile("gipam.css")
 		if err != nil {

@@ -135,11 +135,26 @@ func (s *server) listPrefixesUI(w http.ResponseWriter, r *http.Request) {
 	}{realmID, pfx})
 }
 
-func (s *server) createPrefixUI(w http.ResponseWriter, r *http.Request) {
+func (s *server) listHostsUI(w http.ResponseWriter, r *http.Request) {
 	realmID, err := realmID(r)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	s.serveTemplate(w, r, "createPrefix", realmID)
+	if err = s.realmExists(realmID); err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	hosts, err := s.listHosts(realmID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.serveTemplate(w, r, "listHosts", struct {
+		RealmID int64
+		Hosts   []*Host
+	}{
+		realmID,
+		hosts,
+	})
 }
